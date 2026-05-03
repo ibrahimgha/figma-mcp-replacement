@@ -147,6 +147,13 @@ export function findLargestForegroundCrop(buffer: Buffer, searchBox?: CropBox): 
   };
 }
 
+export function isLikelyScreenCrop(box: CropBox): boolean {
+  const aspect = box.width / box.height;
+  if (box.width < 120 || box.height < 180) return false;
+  if (aspect < 0.12 || aspect > 4) return false;
+  return true;
+}
+
 export function isLikelyFigmaLoadingScreenshot(buffer: Buffer): boolean {
   const png = PNG.sync.read(buffer);
   const totalPixels = png.width * png.height;

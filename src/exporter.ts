@@ -14,6 +14,7 @@ import type { ExportFormat } from "./downloads";
 import { openFileInBrowser, writePromptReport, type PromptReportEntry } from "./promptReport";
 import { cropPng, findIllustrationAssetCrops } from "./imageCrop";
 import { skipReasonForLeftSection } from "./frameFilters";
+import { appendMissingRequiredKnownFrames } from "./knownScreens";
 
 export class FigmaBrowserExporter {
   private readonly options: ExporterOptions;
@@ -50,8 +51,15 @@ export class FigmaBrowserExporter {
       const openUrl = this.options.canvasBoardScreens
         ? withQueryParam(this.options.figmaUrl, "m", "dev")
         : this.options.figmaUrl;
-      this.log(`Opening ${openUrl}`);
-      await page.goto(openUrl, { waitUntil: "domcontentloaded" });
+      if (launch.reusedExistingBrowser) {
+        this.log("Reusing the existing visible browser session.");
+      }
+      if (isSameFigmaTarget(page.url(), openUrl)) {
+        this.log(`Reusing current Figma tab at ${page.url()}`);
+      } else {
+        this.log(`Opening ${openUrl}`);
+        await page.goto(openUrl, { waitUntil: "domcontentloaded" });
+      }
       await ui.waitForEditor();
       if (this.options.skipReadyPrompt) {
         this.log("Skipping ready prompt.");
@@ -59,7 +67,7 @@ export class FigmaBrowserExporter {
         await this.pauseForUserReady();
       }
 
-      const initialFrames = this.filterFramesByName(this.options.useUrlNode
+      const discoveredFrames = this.options.useUrlNode
         ? await this.frameFromInputUrl(ui)
         : this.options.canvasBoardScreens
           ? dedupeFrames(await ui.discoverCanvasBoardScreens(
@@ -69,7 +77,8 @@ export class FigmaBrowserExporter {
             ))
         : this.options.allLeftSections
           ? await this.discoverFramesAcrossLeftSections(ui)
-          : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames)));
+          : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
+      const initialFrames = this.filterFramesByName(this.appendRequiredKnownFrames(discoveredFrames));
       const frames = this.options.skipFrameReview
         ? dedupeFrames(initialFrames)
         : await this.reviewFrames(initialFrames, ui);
@@ -87,8 +96,9 @@ export class FigmaBrowserExporter {
     } finally {
       this.readline?.close();
       if (!this.options.keepBrowserOpen) {
-        await launch.context.close();
+        await launch.close();
       } else {
+        await launch.detach();
         this.log("Leaving browser open because --keep-browser-open was set.");
       }
     }
@@ -135,7 +145,7 @@ export class FigmaBrowserExporter {
       throw new Error("--use-url-node was set, but the Figma URL does not contain node-id.");
     }
     const selectedName = await ui.readSelectedLayerName().catch(() => undefined);
-    const name = selectedName ?? this.options.frameName ?? `Frame ${nodeId}`;
+    const name = this.options.frameName ?? selectedName ?? `Frame ${nodeId}`;
     return [
       {
         nodeId,
@@ -479,6 +489,18 @@ export class FigmaBrowserExporter {
     return filtered;
   }
 
+  private appendRequiredKnownFrames(frames: FrameRecord[]): FrameRecord[] {
+    const result = appendMissingRequiredKnownFrames(this.options.figmaUrl, frames);
+    if (result.added.length > 0) {
+      this.log(
+        `Added ${result.added.length} required Registration result screen(s) that live discovery missed: ${result.added
+          .map((frame) => `${frame.name} (${frame.nodeId})`)
+          .join(", ")}.`,
+      );
+    }
+    return result.frames;
+  }
+
   private effectiveScreenshotMode(): "canvas" | "native" {
     if (!this.options.allowFigmaWrites) return "canvas";
     return this.options.screenshotMode === "native" ? "native" : "canvas";
@@ -508,7 +530,7 @@ export class FigmaBrowserExporter {
       await ui.selectCanvasDiscoveredFrame(this.options.figmaUrl, frame, this.options.maxAutoFrames);
       return;
     }
-    await ui.selectNode(this.options.figmaUrl, frame.nodeId);
+    await ui.selectNode(this.options.figmaUrl, frame.nodeId, frame.name);
   }
 }
 
@@ -528,4 +550,15 @@ function withQueryParam(input: string, key: string, value: string): string {
   const url = new URL(input);
   url.searchParams.set(key, value);
   return url.toString();
+}
+
+function isSameFigmaTarget(currentUrl: string, targetUrl: string): boolean {
+  try {
+    const current = parseFigmaUrl(currentUrl);
+    const target = parseFigmaUrl(targetUrl);
+    if (!current.fileKey || current.fileKey !== target.fileKey) return false;
+    return (current.nodeId ?? "") === (target.nodeId ?? "");
+  } catch {
+    return false;
+  }
 }

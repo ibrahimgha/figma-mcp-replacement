@@ -153,6 +153,7 @@ export function renderPromptHtml(entries: PromptReportEntry[]): string {
       outline-offset: 2px;
     }
     .body {
+      align-items: start;
       display: grid;
       grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
       gap: 18px;
@@ -163,7 +164,7 @@ export function renderPromptHtml(entries: PromptReportEntry[]): string {
       border: 1px solid #dfe3ea;
       border-radius: 6px;
       min-height: 260px;
-      overflow: hidden;
+      overflow: visible;
     }
     .preview-header {
       align-items: center;
@@ -186,7 +187,7 @@ export function renderPromptHtml(entries: PromptReportEntry[]): string {
       white-space: nowrap;
     }
     .preview-image {
-      align-items: center;
+      align-items: flex-start;
       display: flex;
       justify-content: center;
       min-height: 220px;

@@ -11,6 +11,7 @@ import {
   findFigmaSelectionCrop,
   findLargestForegroundCrop,
   isLikelyFigmaLoadingScreenshot,
+  isLikelyScreenCrop,
   type CropBox,
 } from "./imageCrop";
 import { skipReasonForFrameCandidate } from "./frameFilters";
@@ -165,15 +166,26 @@ export class FigmaUi {
 
     const frames: FrameRecord[] = [];
     const seen = new Set<string>();
+    const knownNodeIds = new Set<string>(readyFrames.map((frame) => frame.nodeId).filter(Boolean));
     for (let index = 0; index < candidates.length; index += 1) {
       let candidate = candidates[index];
       if (index > 0) {
         const restoredCandidates = await this.restoreCanvasBoardViewForDiscovery(maxFrames);
         candidate = restoredCandidates[index] ?? nearestCanvasCandidate(candidate, restoredCandidates) ?? candidate;
       }
-      const selected = await this.clickCanvasScreenCandidateAndReadSelection(candidate, ignoredNodeIds);
+      let selected = await this.clickCanvasScreenCandidateAndReadSelection(
+        candidate,
+        new Set([...ignoredNodeIds, ...knownNodeIds, ...seen]),
+      );
+      if (!selected?.nodeId) {
+        selected = await this.clickCanvasScreenCandidateAndReadSelection(candidate, ignoredNodeIds);
+      }
       if (!selected?.nodeId) {
         this.logger(`Canvas candidate ${index + 1}/${candidates.length} did not resolve to a concrete frame.`);
+        continue;
+      }
+      if (knownNodeIds.has(selected.nodeId)) {
+        this.logger(`Canvas candidate ${index + 1}/${candidates.length} selected already-covered Ready frame ${selected.name} (${selected.nodeId}).`);
         continue;
       }
       if (seen.has(selected.nodeId)) {
@@ -539,9 +551,33 @@ export class FigmaUi {
     return selectedNodeId === frame.nodeId;
   }
 
-  async selectNode(figmaUrl: string, nodeId: string): Promise<void> {
-    await this.page.goto(withNodeId(figmaUrl, nodeId), { waitUntil: "domcontentloaded" });
-    await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+  async selectNode(figmaUrl: string, nodeId: string, expectedName?: string): Promise<void> {
+    const targetUrl = withNodeId(figmaUrl, nodeId);
+    let lastName: string | undefined;
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await this.page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+      await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+
+      const selectedNodeId = readNodeIdFromUrl(this.page.url());
+      lastName = await this.readCanvasSelectedLayerName().catch(() => undefined);
+      if (selectedNodeId === nodeId && (!expectedName || !lastName || selectedLayerNameMatches(lastName, expectedName))) {
+        return;
+      }
+
+      if (attempt < 4) {
+        this.logger(
+          `Figma has not selected ${expectedName ?? nodeId} yet after URL navigation (${lastName ?? "unknown"} selected); retrying ${attempt}/4.`,
+        );
+        if (attempt === 2) {
+          await this.page.goto("about:blank", { waitUntil: "domcontentloaded" }).catch(() => undefined);
+        }
+        await this.page.waitForTimeout(Math.max(this.cooldownMs, 1200));
+      }
+    }
+
+    throw new Error(
+      `Figma did not select requested node ${nodeId}${expectedName ? ` (${expectedName})` : ""}; last selected layer was ${lastName ?? "unknown"}.`,
+    );
   }
 
   async readSelectedLayerName(): Promise<string | undefined> {
@@ -601,6 +637,7 @@ export class FigmaUi {
       await this.clearSelectionForCleanCapture();
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        await this.moveMouseAwayFromCanvasTargets();
         const canvasBox = await this.visibleCanvasSearchBox();
         const screenshot = await this.page.screenshot({ fullPage: false });
 
@@ -616,6 +653,16 @@ export class FigmaUi {
         if (!crop) {
           lastError = new Error("Could not detect the selected frame in the Figma viewport.");
           this.logger(`Could not detect the selected frame crop; waiting before screenshot retry ${attempt}/${maxAttempts}.`);
+          await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
+          continue;
+        }
+        if (!isLikelyScreenCrop(crop)) {
+          lastError = new Error(
+            `Detected crop is not screen-like: x=${crop.x}, y=${crop.y}, width=${crop.width}, height=${crop.height}.`,
+          );
+          this.logger(
+            `Detected crop is not screen-like; waiting before screenshot retry ${attempt}/${maxAttempts}.`,
+          );
           await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
           continue;
         }
@@ -863,7 +910,7 @@ export class FigmaUi {
     if (!normalized) return false;
     return /^(inputfield|input field|arrow|content|icons?|image|avatar|button|label|text|title|subtitle|status bar|home indicator|checkbox|radio|divider|rectangle|vector|group(?:\s+\d+)?|untitled design\b)$/i.test(
       normalized,
-    );
+    ) || /^\d+$/i.test(normalized);
   }
 
   private async prepareExportSetting(format: ExportFormat): Promise<void> {
@@ -929,11 +976,25 @@ export class FigmaUi {
   }
 
   private async clearSelectionForCleanCapture(): Promise<void> {
+    await this.moveMouseAwayFromCanvasTargets();
     await this.page.keyboard.press("Escape").catch(() => undefined);
     await this.page.waitForTimeout(120);
     await this.page.keyboard.press("Escape").catch(() => undefined);
-    await this.page.mouse.move(4, 4).catch(() => undefined);
+    await this.moveMouseAwayFromCanvasTargets();
     await this.page.waitForTimeout(Math.max(500, Math.min(this.cooldownMs, 1000)));
+  }
+
+  private async moveMouseAwayFromCanvasTargets(): Promise<void> {
+    const viewport = this.page.viewportSize();
+    const fallbackWidth = viewport?.width ?? 1280;
+    const fallbackHeight = viewport?.height ?? 720;
+    const box = await this.visibleCanvasSearchBox().catch(() => undefined);
+    const x = Math.round((box?.x ?? 0) + (box?.width ?? fallbackWidth) - 8);
+    const y = Math.round((box?.y ?? 0) + 8);
+    const safeX = clamp(x, 1, fallbackWidth - 2);
+    const safeY = clamp(y, 1, fallbackHeight - 2);
+    await this.page.mouse.move(safeX, safeY, { steps: 6 }).catch(() => undefined);
+    await this.page.waitForTimeout(120);
   }
 
   private async hideFigmaUiForCapture(): Promise<boolean> {
@@ -1407,6 +1468,24 @@ function normalizeLayerNameForCanvas(value: string): string {
     .replace(/\s+(?:Edited|Created)\b.*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function selectedLayerNameMatches(actual: string | undefined, expected: string): boolean {
+  if (!actual) return false;
+  const actualName = normalizeNameForLooseMatch(actual);
+  const expectedName = normalizeNameForLooseMatch(expected);
+  if (!actualName || !expectedName) return false;
+  return actualName === expectedName || actualName.includes(expectedName) || expectedName.includes(actualName);
+}
+
+function normalizeNameForLooseMatch(value: string): string {
+  return value
+    .replace(/^click to copy layer name:\s*/i, "")
+    .replace(/\s+(?:Edited|Created)\b.*$/i, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function findLeftCanvasBoardBox(png: PNG): CropBox {

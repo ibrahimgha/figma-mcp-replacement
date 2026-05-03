@@ -16,6 +16,7 @@ export function skipReasonForFrameCandidate(candidate: FrameCandidateForFilter):
   const pageName = candidate.pageName ? normalizeName(candidate.pageName) : "";
 
   if (!name) return "empty frame name";
+  if (/^\d+$/i.test(name)) return "numeric-only utility layer";
   if (/^(screen label|section label)(?:\b|$)/i.test(name)) return "label-only frame";
   if (/^cover$/i.test(name) && /^cover$/i.test(pageName)) return "cover page frame";
   if (/^frame\s+\d+$/i.test(name)) return "generic numbered frame";

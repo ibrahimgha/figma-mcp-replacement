@@ -19,6 +19,7 @@ describe("feedback-learned frame filters", () => {
       "Pointer",
       "Top",
       "Container",
+      "3",
     ];
 
     for (const name of rejected) {

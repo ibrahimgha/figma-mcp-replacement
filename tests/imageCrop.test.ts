@@ -6,6 +6,7 @@ import {
   findIllustrationAssetCrops,
   findLargestForegroundCrop,
   isLikelyFigmaLoadingScreenshot,
+  isLikelyScreenCrop,
 } from "../src/imageCrop";
 
 describe("image crop helpers", () => {
@@ -75,6 +76,11 @@ describe("image crop helpers", () => {
     drawRect(png, 32, 330, 326, 52, 235, 241, 247);
 
     expect(isLikelyFigmaLoadingScreenshot(PNG.sync.write(png))).toBe(false);
+  });
+
+  it("rejects section-divider crops as screen screenshots", () => {
+    expect(isLikelyScreenCrop({ x: 0, y: 0, width: 1916, height: 28 })).toBe(false);
+    expect(isLikelyScreenCrop({ x: 0, y: 0, width: 390, height: 844 })).toBe(true);
   });
 });
 

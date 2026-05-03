@@ -127,6 +127,8 @@ describe("prompt report", () => {
     expect(html.match(/data-screenshot/g)).toHaveLength(3);
     expect(html.match(/<img[^>]+data-screenshot/g)).toHaveLength(2);
     expect(html).toContain("C:\\two\\screenshot.png");
+    expect(html).toContain("align-items: start;");
+    expect(html).toContain("overflow: visible;");
   });
 
   it("renders feedback voting controls with exact screen identifiers", () => {
