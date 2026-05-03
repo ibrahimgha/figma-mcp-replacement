@@ -43,6 +43,9 @@ export class FigmaBrowserExporter {
     this.readline = createInterface({ input, output });
 
     try {
+      if (!this.options.allowFigmaWrites) {
+        this.log("Write prevention active: using canvas screenshots and screenshot-derived assets only.");
+      }
       this.log(`Opening ${this.options.figmaUrl}`);
       await page.goto(this.options.figmaUrl, { waitUntil: "domcontentloaded" });
       await ui.waitForEditor();
@@ -54,7 +57,9 @@ export class FigmaBrowserExporter {
 
       const initialFrames = this.options.useUrlNode
         ? await this.frameFromInputUrl(ui)
-        : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
+        : this.options.allLeftSections
+          ? await this.discoverFramesAcrossLeftSections(ui)
+          : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
       const frames = this.options.skipFrameReview
         ? dedupeFrames(initialFrames)
         : await this.reviewFrames(initialFrames, ui);
@@ -131,6 +136,32 @@ export class FigmaBrowserExporter {
     ];
   }
 
+  private async discoverFramesAcrossLeftSections(ui: FigmaUi): Promise<FrameRecord[]> {
+    const sections = await ui.discoverLeftSidebarSections(this.options.maxLeftSections);
+    if (sections.length === 0) {
+      this.log("No left sidebar sections were found. Falling back to the current page.");
+      return dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
+    }
+
+    const allFrames: FrameRecord[] = [];
+    for (const [index, section] of sections.entries()) {
+      this.log(`Scanning left section ${index + 1}/${sections.length}: ${section.name}`);
+      const selected = await ui.selectLeftSidebarSection(section);
+      if (!selected) {
+        this.log(`Could not select left section: ${section.name}`);
+        continue;
+      }
+      const sectionFrames = dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames)).map((frame) => ({
+        ...frame,
+        pageName: section.name,
+      }));
+      this.log(`Found ${sectionFrames.length} frame(s) in ${section.name}.`);
+      allFrames.push(...sectionFrames);
+    }
+
+    return dedupeFrames(allFrames);
+  }
+
   private async readCurrentSelectionAsFrame(ui: FigmaUi): Promise<FrameRecord | undefined> {
     await this.question("Select the frame in Figma, then press Enter here to record it: ");
     const nodeId = readNodeIdFromUrl(ui.currentUrl());
@@ -172,14 +203,15 @@ export class FigmaBrowserExporter {
 
       try {
         await ui.selectNode(this.options.figmaUrl, frame.nodeId);
+        const screenshotMode = this.effectiveScreenshotMode();
         const screenshot =
-          this.options.screenshotMode === "canvas"
+          screenshotMode === "canvas"
             ? await ui.captureSelectedFrameScreenshot(path.join(frameDir, "screenshot.png"))
             : await ui.exportSelectedAs("PNG", path.join(frameDir, "screenshot.png"));
         addScreenshot(manifest, frameDir, screenshot);
       } catch (error) {
         manifest.errors.push(`Frame screenshot export failed: ${formatError(error)}`);
-        if (this.options.screenshotMode !== "native") {
+        if (this.effectiveScreenshotMode() !== "native") {
           try {
             const fallbackScreenshot = await ui.captureSelectedFrameScreenshot(
               path.join(frameDir, "screenshot.png"),
@@ -212,11 +244,21 @@ export class FigmaBrowserExporter {
     errors: string[],
   ): Promise<void> {
     if (this.options.assetMode === "manual") {
+      if (!this.options.allowFigmaWrites) {
+        assets.push({
+          nodeId: `${frame.nodeId}#manual-assets`,
+          name: "Manual asset export",
+          kind: "rendered-image",
+          status: "skipped",
+          reason: "Manual Figma UI asset export is disabled because write prevention is active.",
+        });
+        return;
+      }
       await this.exportManualAssets(frame, ui, assetsDir, frameDir, assets, errors);
       return;
     }
 
-    if (this.options.screenshotMode === "canvas") {
+    if (!this.options.allowFigmaWrites || this.effectiveScreenshotMode() === "canvas") {
       await this.exportDerivedScreenshotAssets(frame, assetsDir, frameDir, assets, errors);
       return;
     }
@@ -352,6 +394,17 @@ export class FigmaBrowserExporter {
     assets: AssetRecord[],
     candidate: { nodeId: string; name: string; kind: "rendered-image" | "svg" },
   ): Promise<void> {
+    if (!this.options.allowFigmaWrites) {
+      assets.push({
+        nodeId: candidate.nodeId,
+        name: candidate.name,
+        kind: candidate.kind,
+        status: "skipped",
+        reason: "Native Figma export is disabled because write prevention is active.",
+      });
+      return;
+    }
+
     const format: ExportFormat = candidate.kind === "svg" ? "SVG" : "PNG";
     const target = path.join(
       assetsDir,
@@ -394,6 +447,11 @@ export class FigmaBrowserExporter {
 
   private log(message: string): void {
     console.log(message);
+  }
+
+  private effectiveScreenshotMode(): "canvas" | "native" {
+    if (!this.options.allowFigmaWrites) return "canvas";
+    return this.options.screenshotMode === "native" ? "native" : "canvas";
   }
 }
 

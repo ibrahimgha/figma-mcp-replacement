@@ -51,11 +51,18 @@ program
     parseScreenshotMode,
     "auto",
   )
+  .option(
+    "--allow-figma-writes",
+    "Allow Figma UI actions that can modify the file, such as adding export settings",
+    false,
+  )
   .option("--max-auto-frames <count>", "Maximum auto-detected frame candidates to inspect", parsePositiveInt, 250)
   .option("--max-assets-per-frame <count>", "Maximum auto-detected asset candidates per frame", parsePositiveInt, 75)
   .option("--keep-browser-open", "Leave the browser open after the run", false)
   .option("--skip-ready-prompt", "Do not wait for terminal confirmation after opening Figma", false)
   .option("--use-url-node", "Use the node-id from the input URL as the frame to export", false)
+  .option("--all-left-sections", "Scroll the left Pages panel and export frames from every visible/discovered page", false)
+  .option("--max-left-sections <count>", "Maximum left Pages panel sections to inspect", parsePositiveInt, 100)
   .option("--skip-frame-review", "Export discovered/provided frames without terminal review", false)
   .option("--frame-name <name>", "Name to use when --use-url-node cannot read a selected layer name")
   .action(async (figmaUrl: string, rawOptions) => {
@@ -69,11 +76,14 @@ program
       profileDir: rawOptions.profileDir ? path.resolve(process.cwd(), rawOptions.profileDir) : undefined,
       assetMode: rawOptions.assetMode,
       screenshotMode: rawOptions.screenshotMode,
+      allowFigmaWrites: rawOptions.allowFigmaWrites,
       maxAutoFrames: rawOptions.maxAutoFrames,
       maxAssetsPerFrame: rawOptions.maxAssetsPerFrame,
       keepBrowserOpen: rawOptions.keepBrowserOpen,
       skipReadyPrompt: rawOptions.skipReadyPrompt,
       useUrlNode: rawOptions.useUrlNode,
+      allLeftSections: rawOptions.allLeftSections,
+      maxLeftSections: rawOptions.maxLeftSections,
       skipFrameReview: rawOptions.skipFrameReview,
       frameName: rawOptions.frameName,
     };

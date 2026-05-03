@@ -5,6 +5,11 @@ export type AssetStatus = "exported" | "skipped" | "failed";
 export type AssetMode = "auto" | "manual" | "none";
 export type ScreenshotMode = "auto" | "native" | "canvas";
 
+export interface LeftSectionRecord {
+  name: string;
+  source: "pages-panel";
+}
+
 export interface FrameRecord {
   nodeId: string;
   name: string;
@@ -42,11 +47,14 @@ export interface ExporterOptions {
   profileDir?: string;
   assetMode: AssetMode;
   screenshotMode: ScreenshotMode;
+  allowFigmaWrites: boolean;
   maxAutoFrames: number;
   maxAssetsPerFrame: number;
   keepBrowserOpen: boolean;
   skipReadyPrompt: boolean;
   useUrlNode: boolean;
+  allLeftSections: boolean;
+  maxLeftSections: number;
   skipFrameReview: boolean;
   frameName?: string;
 }

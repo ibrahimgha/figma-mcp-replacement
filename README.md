@@ -4,6 +4,8 @@ A local, visible-browser Figma exporter for Windows.
 
 It opens a real Chrome, Edge, or Chromium window, lets you sign in normally, scans the visible Figma UI for designed screens, exports each screen screenshot, exports rendered assets when possible, and writes a prompt gallery HTML file that opens automatically when the run finishes.
 
+By default, the exporter avoids Figma UI actions that can write to the file. It uses canvas screenshots and screenshot-derived assets, and it does not add export settings. It still has to navigate pages, select frames, zoom to selection, and toggle Figma's local UI visibility to capture screens.
+
 This project intentionally avoids:
 
 - Headless browser automation
@@ -19,12 +21,14 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Opens a Figma design URL in a visible browser.
 - Uses a persistent local browser profile so sign-in can be reused.
 - Pauses while you sign in and load the file.
-- Detects frame-like screens from Figma's visible Layers UI.
+- Can scroll the left Pages panel and scan every discovered page/section with `--all-left-sections`.
+- Detects frame-like screens from Figma's visible Layers UI and Dev Mode "Ready for development" cards.
 - Lets you review, add, or remove frames before exporting.
 - Exports every selected frame into its own folder.
 - For Dev Mode/view-only files, can hide the Figma UI, zoom to each selected frame, and crop the selected frame outline with `--screenshot-mode canvas`.
 - Exports rendered assets as PNG/SVG through Figma's UI when possible.
 - In canvas screenshot mode, derives standalone illustration/icon PNG assets from the screen screenshot when nested Figma asset export is unavailable.
+- Blocks native Figma export-setting writes unless `--allow-figma-writes` is explicitly passed.
 - Writes a `manifest.json` for every exported frame.
 - Generates `prompts.html` with:
   - One prompt per screen, in export order
@@ -73,6 +77,8 @@ node --import tsx .\src\cli.ts "<figma-url>" --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode auto
+node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --screenshot-mode canvas --asset-mode auto
+node --import tsx .\src\cli.ts "<figma-url>" --allow-figma-writes --screenshot-mode native
 ```
 
 ## Workflow
@@ -81,7 +87,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mo
 2. A visible browser opens.
 3. Sign in, solve any challenge, and wait for the design file to finish loading.
 4. Press Enter in the terminal.
-5. The tool scans the visible Figma UI for frame candidates and records their `node-id` by selecting them.
+5. The tool scans the visible Figma UI for frame candidates and records their `node-id` by selecting them. With `--all-left-sections`, it first scrolls the left Pages panel, selects each discovered page/section, and scans frames on each one.
 6. Review the frame list:
    - Press Enter to export.
    - Type `a` to add the current Figma selection.
@@ -113,6 +119,8 @@ The prompt HTML page is intended for quick run verification and copy/paste hando
 Pure browser UI mode cannot guarantee original uploaded image bytes. This tool exports rendered assets by selecting image-like layers as PNG and vector-like layers as SVG through Figma's export UI.
 
 For Dev Mode/view-only files, use `--screenshot-mode canvas --asset-mode auto`. The tool will save the selected screen crop, then derive standalone illustration/icon PNG assets from that screenshot. This catches common empty-state illustrations and icons even when Figma's native export panel is unavailable.
+
+Native Figma export can add or adjust export settings in the file, so it is disabled by default. To allow that write-capable path, pass `--allow-figma-writes --screenshot-mode native`.
 
 If automatic asset discovery is noisy, run with manual asset mode:
 

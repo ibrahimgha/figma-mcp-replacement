@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import type { AssetKind, CandidateRecord, FrameRecord } from "./types";
+import type { AssetKind, CandidateRecord, FrameRecord, LeftSectionRecord } from "./types";
 import type { ExporterConfig } from "./config";
 import { readNodeIdFromUrl, withNodeId } from "./utils/url";
 import { extensionForFormat, saveDownloadAs, type ExportFormat } from "./downloads";
@@ -74,6 +74,229 @@ export class FigmaUi {
       });
     }
     return frames;
+  }
+
+  async discoverLeftSidebarSections(maxSections: number): Promise<LeftSectionRecord[]> {
+    await this.ensureBrowserEvalHelpers();
+    await this.ensureFigmaUiVisible();
+    const sections = await this.page.evaluate(async (limit) => {
+      function clean(value: string | null | undefined): string {
+        return (value ?? "").replace(/\s+/g, " ").trim();
+      }
+
+      function isVisible(element: Element): boolean {
+        const html = element as HTMLElement;
+        return Boolean(html.offsetWidth || html.offsetHeight || html.getClientRects().length);
+      }
+
+      function isPageRow(element: HTMLElement): boolean {
+        const classes = [
+          String(element.className),
+          String(element.parentElement?.className ?? ""),
+          String(element.parentElement?.parentElement?.className ?? ""),
+        ].join(" ");
+        return /pageRow|pagesRow|renameableNode/i.test(classes);
+      }
+
+      function pageRows(): HTMLElement[] {
+        return Array.from(document.querySelectorAll<HTMLElement>("button, div[role='button']"))
+          .filter((row) => isVisible(row))
+          .filter((row) => row.getBoundingClientRect().left < 300)
+          .filter(isPageRow)
+          .filter((row) => {
+            const text = clean(row.innerText || row.textContent);
+            if (!text || text.length > 120) return false;
+            if (/^(Pages|Show all pages|Ready for development|Layers)$/i.test(text)) return false;
+            if (/\bEdited\b/i.test(text)) return false;
+            return true;
+          });
+      }
+
+      function findPageScrollContainer(): HTMLElement | Window {
+        const explicit = Array.from(document.querySelectorAll<HTMLElement>("[class*='pages'][class*='scroll' i], [class*='pagesList' i]"))
+          .find((element) => isVisible(element) && element.getBoundingClientRect().left < 300);
+        if (explicit) return explicit;
+
+        const row = pageRows()[0];
+        let current = row?.parentElement;
+        while (current) {
+          const style = window.getComputedStyle(current);
+          if (
+            current.scrollHeight > current.clientHeight + 20 &&
+            !/hidden/i.test(style.overflowY) &&
+            current.getBoundingClientRect().left < 300
+          ) {
+            return current;
+          }
+          current = current.parentElement;
+        }
+        return window;
+      }
+
+      async function settle() {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      }
+
+      async function waitForPageRows() {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < 15000) {
+          if (pageRows().length > 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        return false;
+      }
+
+      if (!(await waitForPageRows())) return [];
+
+      const showAll = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
+        .filter((button) => isVisible(button))
+        .find((button) => /^Show all pages$/i.test(clean(button.innerText || button.textContent || button.getAttribute("aria-label"))));
+      if (showAll) {
+        showAll.click();
+        await settle();
+      }
+
+      const scroller = findPageScrollContainer();
+      const scrollerElement: HTMLElement | undefined = scroller === window ? undefined : (scroller as HTMLElement);
+      const original = scrollerElement ? scrollerElement.scrollTop : window.scrollY;
+      const max = scrollerElement
+        ? Math.max(0, scrollerElement.scrollHeight - scrollerElement.clientHeight)
+        : Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const pageSize = scrollerElement ? Math.max(96, scrollerElement.clientHeight) : window.innerHeight;
+      const seen = new Set<string>();
+      const found: string[] = [];
+
+      for (let top = 0; top <= max + 1 && found.length < limit; top += Math.max(48, Math.floor(pageSize * 0.75))) {
+        if (scrollerElement) scrollerElement.scrollTop = top;
+        else window.scrollTo(0, top);
+        await settle();
+        for (const row of pageRows()) {
+          const name = clean(row.innerText || row.textContent);
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          found.push(name);
+          if (found.length >= limit) break;
+        }
+      }
+
+      if (scrollerElement) scrollerElement.scrollTop = original;
+      else window.scrollTo(0, original);
+
+      return found.map((name) => ({ name, source: "pages-panel" as const }));
+    }, maxSections);
+
+    this.logger(`Discovered ${sections.length} left sidebar section(s) from the Figma Pages panel.`);
+    return sections;
+  }
+
+  async selectLeftSidebarSection(section: LeftSectionRecord): Promise<boolean> {
+    await this.ensureBrowserEvalHelpers();
+    await this.ensureFigmaUiVisible();
+    const clicked = await this.page.evaluate(async (targetName) => {
+      function clean(value: string | null | undefined): string {
+        return (value ?? "").replace(/\s+/g, " ").trim();
+      }
+
+      function isVisible(element: Element): boolean {
+        const html = element as HTMLElement;
+        return Boolean(html.offsetWidth || html.offsetHeight || html.getClientRects().length);
+      }
+
+      function isPageRow(element: HTMLElement): boolean {
+        const classes = [
+          String(element.className),
+          String(element.parentElement?.className ?? ""),
+          String(element.parentElement?.parentElement?.className ?? ""),
+        ].join(" ");
+        return /pageRow|pagesRow|renameableNode/i.test(classes);
+      }
+
+      function pageRows(): HTMLElement[] {
+        return Array.from(document.querySelectorAll<HTMLElement>("button, div[role='button']"))
+          .filter((row) => isVisible(row))
+          .filter((row) => row.getBoundingClientRect().left < 300)
+          .filter(isPageRow);
+      }
+
+      function findPageScrollContainer(): HTMLElement | Window {
+        const explicit = Array.from(document.querySelectorAll<HTMLElement>("[class*='pages'][class*='scroll' i], [class*='pagesList' i]"))
+          .find((element) => isVisible(element) && element.getBoundingClientRect().left < 300);
+        if (explicit) return explicit;
+
+        const row = pageRows()[0];
+        let current = row?.parentElement;
+        while (current) {
+          const style = window.getComputedStyle(current);
+          if (
+            current.scrollHeight > current.clientHeight + 20 &&
+            !/hidden/i.test(style.overflowY) &&
+            current.getBoundingClientRect().left < 300
+          ) {
+            return current;
+          }
+          current = current.parentElement;
+        }
+        return window;
+      }
+
+      async function settle() {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      }
+
+      async function waitForPageRows() {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < 15000) {
+          if (pageRows().length > 0) return true;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        return false;
+      }
+
+      if (!(await waitForPageRows())) return false;
+
+      const showAll = Array.from(document.querySelectorAll<HTMLElement>("button, [role='button']"))
+        .filter((button) => isVisible(button))
+        .find((button) => /^Show all pages$/i.test(clean(button.innerText || button.textContent || button.getAttribute("aria-label"))));
+      if (showAll) {
+        showAll.click();
+        await settle();
+      }
+
+      const scroller = findPageScrollContainer();
+      const scrollerElement: HTMLElement | undefined = scroller === window ? undefined : (scroller as HTMLElement);
+      const original = scrollerElement ? scrollerElement.scrollTop : window.scrollY;
+      const max = scrollerElement
+        ? Math.max(0, scrollerElement.scrollHeight - scrollerElement.clientHeight)
+        : Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const pageSize = scrollerElement ? Math.max(96, scrollerElement.clientHeight) : window.innerHeight;
+
+      for (let top = 0; top <= max + 1; top += Math.max(48, Math.floor(pageSize * 0.75))) {
+        if (scrollerElement) scrollerElement.scrollTop = top;
+        else window.scrollTo(0, top);
+        await settle();
+        const match = pageRows().find((row) => clean(row.innerText || row.textContent) === targetName);
+        if (!match) continue;
+        match.scrollIntoView({ block: "center", inline: "nearest" });
+        await settle();
+        const rect = match.getBoundingClientRect();
+        const x = rect.left + Math.min(rect.width / 2, 88);
+        const y = rect.top + rect.height / 2;
+        match.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+        match.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+        match.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+        match.click();
+        return true;
+      }
+
+      if (scrollerElement) scrollerElement.scrollTop = original;
+      else window.scrollTo(0, original);
+      return false;
+    }, section.name);
+
+    if (clicked) {
+      await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
+    }
+    return clicked;
   }
 
   async discoverAssetCandidates(maxAssets: number): Promise<CandidateRecord[]> {
@@ -313,9 +536,15 @@ export class FigmaUi {
           const icons = Array.from(row.querySelectorAll("[role='img'], [aria-label]"))
             .map((element) => clean(element.getAttribute("aria-label") || element.getAttribute("data-tooltip")))
             .filter(Boolean);
+          const className = String((row as HTMLElement).className);
+          const rawName = clean((row as HTMLElement).innerText || row.textContent);
           return {
-            name: clean((row as HTMLElement).innerText || row.textContent),
-            kind: icons.find((icon) => /^(Frame|Auto layout|Section|Instance)$/i.test(icon)),
+            name: /dev_handoff_nodes_panel--item/i.test(className)
+              ? clean(rawName.replace(/\s+(?:Edited|Created)\b.*$/i, ""))
+              : rawName,
+            kind: /dev_handoff_nodes_panel--item/i.test(className)
+              ? "Ready for development"
+              : icons.find((icon) => /^(Frame|Auto layout|Section|Instance)$/i.test(icon)),
           };
         }
 
@@ -325,9 +554,9 @@ export class FigmaUi {
         }
 
         function layerRows(): HTMLElement[] {
-          return Array.from(document.querySelectorAll<HTMLElement>("div[role='button']"))
+          return Array.from(document.querySelectorAll<HTMLElement>("button, div[role='button']"))
             .filter((row) => isVisible(row))
-            .filter((row) => /layers_row--row|dev_handoff_layers_row--row/i.test(String(row.className)));
+            .filter((row) => /layers_row--row|dev_handoff_layers_row--row|dev_handoff_nodes_panel--item/i.test(String(row.className)));
         }
 
         function findScrollContainer(): HTMLElement | Window {
@@ -413,9 +642,21 @@ export class FigmaUi {
       }
 
       function rowInfo(row: HTMLElement): RowCandidate | undefined {
-        const name = clean(row.innerText || row.textContent);
+        const className = String(row.className);
+        const rawName = clean(row.innerText || row.textContent);
+        const name = /dev_handoff_nodes_panel--item/i.test(className)
+          ? clean(rawName.replace(/\s+(?:Edited|Created)\b.*$/i, ""))
+          : rawName;
         if (!name || name.length > 160) return undefined;
         if (/^(screen label|section label)$/i.test(name)) return undefined;
+        if (/dev_handoff_nodes_panel--item/i.test(className)) {
+          return {
+            name,
+            layerKind: "Ready for development",
+            confidence: 9,
+            reason: "ready-for-development screen item",
+          };
+        }
         const icons = Array.from(row.querySelectorAll("[role='img'], [aria-label]"))
           .map((element) => clean(element.getAttribute("aria-label") || element.getAttribute("data-tooltip")))
           .filter(Boolean);
@@ -430,9 +671,9 @@ export class FigmaUi {
       }
 
       function rows(): HTMLElement[] {
-        return Array.from(document.querySelectorAll<HTMLElement>("div[role='button']"))
+        return Array.from(document.querySelectorAll<HTMLElement>("button, div[role='button']"))
           .filter((row) => isVisible(row))
-          .filter((row) => /layers_row--row|dev_handoff_layers_row--row/i.test(String(row.className)));
+          .filter((row) => /layers_row--row|dev_handoff_layers_row--row|dev_handoff_nodes_panel--item/i.test(String(row.className)));
       }
 
       function findScrollContainer(): HTMLElement | Window {
@@ -589,5 +830,27 @@ export class FigmaUi {
     await this.page
       .evaluate("globalThis.__name = globalThis.__name || ((value) => value)")
       .catch(() => undefined);
+  }
+
+  private async ensureFigmaUiVisible(): Promise<void> {
+    await this.ensureBrowserEvalHelpers();
+    const visible = await this.page.evaluate(() => {
+      const labels = Array.from(document.querySelectorAll("button,[role='button'],[aria-label]"))
+        .map((element) =>
+          [
+            element.getAttribute("aria-label"),
+            element.getAttribute("data-tooltip"),
+            (element as HTMLElement).innerText,
+            element.textContent,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        )
+        .join(" ");
+      return /\b(Main menu|Pages|Layers|Minimize UI)\b/i.test(labels);
+    });
+    if (visible) return;
+    await this.page.keyboard.press(process.platform === "darwin" ? "Meta+\\" : "Control+\\").catch(() => undefined);
+    await this.page.waitForTimeout(Math.max(1000, this.cooldownMs));
   }
 }
