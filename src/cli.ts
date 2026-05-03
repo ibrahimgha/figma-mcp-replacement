@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 import { FigmaBrowserExporter } from "./exporter";
-import type { AssetMode, BrowserChoice, ExporterOptions } from "./types";
+import type { AssetMode, BrowserChoice, ExporterOptions, ScreenshotMode } from "./types";
 import { DEFAULT_CONFIG } from "./config";
 
 function parsePositiveInt(value: string): number {
@@ -22,6 +22,11 @@ function parseAssetMode(value: string): AssetMode {
   throw new InvalidArgumentError("Asset mode must be auto, manual, or none.");
 }
 
+function parseScreenshotMode(value: string): ScreenshotMode {
+  if (value === "auto" || value === "native" || value === "canvas") return value;
+  throw new InvalidArgumentError("Screenshot mode must be auto, native, or canvas.");
+}
+
 const program = new Command();
 
 program
@@ -40,6 +45,12 @@ program
   .option("--export-scale <scale>", "Export scale label, reserved for future UI tuning", DEFAULT_CONFIG.exportScale)
   .option("--profile-dir <dir>", "Persistent browser profile directory")
   .option("--asset-mode <mode>", "Asset export mode: auto, manual, or none", parseAssetMode, "auto")
+  .option(
+    "--screenshot-mode <mode>",
+    "Screenshot mode: auto, native, or canvas",
+    parseScreenshotMode,
+    "auto",
+  )
   .option("--max-auto-frames <count>", "Maximum auto-detected frame candidates to inspect", parsePositiveInt, 250)
   .option("--max-assets-per-frame <count>", "Maximum auto-detected asset candidates per frame", parsePositiveInt, 75)
   .option("--keep-browser-open", "Leave the browser open after the run", false)
@@ -57,6 +68,7 @@ program
       exportScale: rawOptions.exportScale,
       profileDir: rawOptions.profileDir ? path.resolve(process.cwd(), rawOptions.profileDir) : undefined,
       assetMode: rawOptions.assetMode,
+      screenshotMode: rawOptions.screenshotMode,
       maxAutoFrames: rawOptions.maxAutoFrames,
       maxAssetsPerFrame: rawOptions.maxAssetsPerFrame,
       keepBrowserOpen: rawOptions.keepBrowserOpen,

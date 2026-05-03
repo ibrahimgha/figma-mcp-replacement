@@ -170,21 +170,23 @@ export class FigmaBrowserExporter {
 
       try {
         await ui.selectNode(this.options.figmaUrl, frame.nodeId);
-        const screenshot = await ui.exportSelectedAs(
-          "PNG",
-          path.join(frameDir, "screenshot.png"),
-        );
+        const screenshot =
+          this.options.screenshotMode === "canvas"
+            ? await ui.captureSelectedFrameScreenshot(path.join(frameDir, "screenshot.png"))
+            : await ui.exportSelectedAs("PNG", path.join(frameDir, "screenshot.png"));
         addScreenshot(manifest, frameDir, screenshot);
       } catch (error) {
         manifest.errors.push(`Frame screenshot export failed: ${formatError(error)}`);
-        try {
-          const fallbackScreenshot = await ui.captureViewportScreenshot(
-            path.join(frameDir, "screenshot.png"),
-          );
-          addScreenshot(manifest, frameDir, fallbackScreenshot);
-          manifest.errors.push("Saved browser viewport screenshot fallback.");
-        } catch (fallbackError) {
-          manifest.errors.push(`Browser viewport screenshot fallback failed: ${formatError(fallbackError)}`);
+        if (this.options.screenshotMode !== "native") {
+          try {
+            const fallbackScreenshot = await ui.captureSelectedFrameScreenshot(
+              path.join(frameDir, "screenshot.png"),
+            );
+            addScreenshot(manifest, frameDir, fallbackScreenshot);
+            manifest.errors.push("Saved selected-frame screenshot from the visible Figma canvas.");
+          } catch (fallbackError) {
+            manifest.errors.push(`Selected-frame screenshot fallback failed: ${formatError(fallbackError)}`);
+          }
         }
       }
 

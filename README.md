@@ -22,6 +22,7 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Detects frame-like screens from Figma's visible Layers UI.
 - Lets you review, add, or remove frames before exporting.
 - Exports every selected frame into its own folder.
+- For Dev Mode/view-only files, can hide the Figma UI, zoom to each selected frame, and crop the selected frame outline with `--screenshot-mode canvas`.
 - Exports rendered assets as PNG/SVG through Figma's UI when possible.
 - Writes a `manifest.json` for every exported frame.
 - Generates `prompts.html` with:
@@ -70,6 +71,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --asset-mode manual
 node --import tsx .\src\cli.ts "<figma-url>" --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
+node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode none
 ```
 
 ## Workflow

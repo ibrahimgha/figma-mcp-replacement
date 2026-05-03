@@ -3,6 +3,7 @@ export type FrameSource = "auto" | "manual";
 export type AssetKind = "rendered-image" | "svg";
 export type AssetStatus = "exported" | "skipped" | "failed";
 export type AssetMode = "auto" | "manual" | "none";
+export type ScreenshotMode = "auto" | "native" | "canvas";
 
 export interface FrameRecord {
   nodeId: string;
@@ -25,6 +26,7 @@ export interface CandidateRecord {
   candidateId: number;
   name: string;
   kind?: AssetKind;
+  layerKind?: string;
   nodeId?: string;
   confidence: number;
   reason: string;
@@ -39,6 +41,7 @@ export interface ExporterOptions {
   exportScale: string;
   profileDir?: string;
   assetMode: AssetMode;
+  screenshotMode: ScreenshotMode;
   maxAutoFrames: number;
   maxAssetsPerFrame: number;
   keepBrowserOpen: boolean;

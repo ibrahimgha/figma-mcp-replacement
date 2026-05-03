@@ -1,0 +1,88 @@
+import { PNG } from "pngjs";
+import { describe, expect, it } from "vitest";
+import { cropPng, findFigmaSelectionCrop, findLargestForegroundCrop } from "../src/imageCrop";
+
+describe("image crop helpers", () => {
+  it("finds and crops the selected Figma frame outline", () => {
+    const png = new PNG({ width: 240, height: 180 });
+    for (let index = 0; index < png.data.length; index += 4) {
+      png.data[index] = 30;
+      png.data[index + 1] = 30;
+      png.data[index + 2] = 30;
+      png.data[index + 3] = 255;
+    }
+
+    drawBlueRect(png, 50, 30, 140, 100);
+    const buffer = PNG.sync.write(png);
+    const box = findFigmaSelectionCrop(buffer);
+
+    expect(box).toEqual({ x: 53, y: 33, width: 134, height: 94 });
+    const cropped = PNG.sync.read(cropPng(buffer, box!));
+    expect(cropped.width).toBe(134);
+    expect(cropped.height).toBe(94);
+  });
+
+  it("finds the largest light frame on a dark canvas", () => {
+    const png = new PNG({ width: 420, height: 260 });
+    fill(png, 28, 28, 28);
+    drawRect(png, 80, 40, 230, 170, 252, 252, 252);
+    drawRect(png, 80, 40, 48, 170, 0, 72, 190);
+    drawRect(png, 340, 50, 48, 90, 252, 252, 252);
+
+    expect(findLargestForegroundCrop(PNG.sync.write(png))).toEqual({
+      x: 82,
+      y: 42,
+      width: 226,
+      height: 166,
+    });
+  });
+});
+
+function drawBlueRect(png: PNG, x: number, y: number, width: number, height: number): void {
+  for (let dx = 0; dx < width; dx += 1) {
+    setPixel(png, x + dx, y);
+    setPixel(png, x + dx, y + height - 1);
+  }
+  for (let dy = 0; dy < height; dy += 1) {
+    setPixel(png, x, y + dy);
+    setPixel(png, x + width - 1, y + dy);
+  }
+}
+
+function setPixel(png: PNG, x: number, y: number): void {
+  const offset = (y * png.width + x) * 4;
+  png.data[offset] = 13;
+  png.data[offset + 1] = 153;
+  png.data[offset + 2] = 255;
+  png.data[offset + 3] = 255;
+}
+
+function fill(png: PNG, r: number, g: number, b: number): void {
+  for (let index = 0; index < png.data.length; index += 4) {
+    png.data[index] = r;
+    png.data[index + 1] = g;
+    png.data[index + 2] = b;
+    png.data[index + 3] = 255;
+  }
+}
+
+function drawRect(
+  png: PNG,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  r: number,
+  g: number,
+  b: number,
+): void {
+  for (let yy = y; yy < y + height; yy += 1) {
+    for (let xx = x; xx < x + width; xx += 1) {
+      const offset = (yy * png.width + xx) * 4;
+      png.data[offset] = r;
+      png.data[offset + 1] = g;
+      png.data[offset + 2] = b;
+      png.data[offset + 3] = 255;
+    }
+  }
+}

@@ -34,8 +34,8 @@ export async function launchVisibleBrowser(args: LaunchArgs): Promise<LaunchResu
         headless: false,
         acceptDownloads: true,
         downloadsPath: downloadsDir,
-        viewport: null,
-        args: ["--start-maximized"],
+        viewport: { width: 1920, height: 1080 },
+        args: ["--start-maximized", "--window-size=1920,1080"],
         ...(channel === "chromium" ? {} : { channel }),
       };
       const context = await chromium.launchPersistentContext(profileRoot, launchOptions);
