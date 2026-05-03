@@ -51,6 +51,14 @@ npm.cmd install
 
 ## Run
 
+Recommended on Windows, especially for Figma URLs that include `&p=...` or `&m=...` query parameters:
+
+```powershell
+node --import tsx .\src\cli.ts "https://www.figma.com/design/FILE_KEY/File-Name?node-id=1-2&p=f&m=dev" --out .\exports --browser chrome --cooldown-ms 1500
+```
+
+The `npm.cmd run export -- ...` form works for simple URLs, but Windows command processing can split Figma URLs containing `&`.
+
 ```powershell
 npm.cmd run export -- "https://www.figma.com/design/FILE_KEY/File-Name" --out .\exports --browser chrome --cooldown-ms 1500
 ```
@@ -58,9 +66,9 @@ npm.cmd run export -- "https://www.figma.com/design/FILE_KEY/File-Name" --out .\
 Useful options:
 
 ```powershell
-npm.cmd run export -- "<figma-url>" --asset-mode manual
-npm.cmd run export -- "<figma-url>" --asset-mode none
-npm.cmd run export -- "<figma-url>" --browser edge --keep-browser-open
+node --import tsx .\src\cli.ts "<figma-url>" --asset-mode manual
+node --import tsx .\src\cli.ts "<figma-url>" --asset-mode none
+node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 ```
 
 ## Workflow
@@ -121,9 +129,7 @@ Use this file to tune UI selectors and default timing if Figma changes its inter
 Generated runtime folders are ignored by Git:
 
 ```text
-.figma-browser-export/profile/
-.figma-browser-export/downloads/
-.figma-browser-export/tmp/
+.figma-browser-export/
 exports/
 dist/
 node_modules/

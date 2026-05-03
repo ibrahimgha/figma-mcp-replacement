@@ -1,8 +1,6 @@
 node_modules/
 dist/
 coverage/
-.figma-browser-export/profile/
-.figma-browser-export/downloads/
-.figma-browser-export/tmp/
+.figma-browser-export/
 exports/
 *.log
