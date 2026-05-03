@@ -23,6 +23,8 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Pauses while you sign in and load the file.
 - Can scroll the left Pages panel and scan every discovered page/section with `--all-left-sections`.
 - Detects frame-like screens from Figma's visible Layers UI and Dev Mode "Ready for development" cards.
+- Can detect small phone screens directly from a visible canvas board with `--canvas-board-screens`, useful when Dev Mode only lists a subset of the real board.
+- In canvas-board mode, opens the file once in Dev Mode, merges Ready-for-development rows with canvas-detected screens, and pre-captures selected canvas screens immediately to avoid repeated per-screen URL refreshes.
 - Uses feedback-learned filters to skip obvious non-screen rows such as cover/overview pages, labels, raw image frames, device mock frames, and generic numbered frames.
 - Lets you review, add, or remove frames before exporting.
 - Exports every selected frame into its own folder.
@@ -79,6 +81,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode auto
 node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --screenshot-mode canvas --asset-mode auto
+node --import tsx .\src\cli.ts "<figma-url>" --canvas-board-screens --screenshot-mode canvas --asset-mode auto --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --left-section "Registration" --frame-name-match "Registration - light mode|OTP Error|failed"
 node --import tsx .\src\cli.ts "<figma-url>" --allow-figma-writes --screenshot-mode native
 ```
@@ -89,7 +92,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --allow-figma-writes --screenshot-m
 2. A visible browser opens.
 3. Sign in, solve any challenge, and wait for the design file to finish loading.
 4. Press Enter in the terminal.
-5. The tool scans the visible Figma UI for frame candidates and records their `node-id` by selecting them. With `--all-left-sections`, it first scrolls the left Pages panel, selects each discovered page/section, and scans frames on each one.
+5. The tool scans the visible Figma UI for frame candidates and records their `node-id` by selecting them. With `--all-left-sections`, it first scrolls the left Pages panel, selects each discovered page/section, and scans frames on each one. With `--canvas-board-screens`, it detects phone-sized screen rectangles from the visible canvas board, clicks each detected screen to learn its real `node-id`, and pre-captures those screens while the correct selection is still active.
 6. Review the frame list:
    - Press Enter to export.
    - Type `a` to add the current Figma selection.

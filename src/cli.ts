@@ -61,6 +61,11 @@ program
   .option("--keep-browser-open", "Leave the browser open after the run", false)
   .option("--skip-ready-prompt", "Do not wait for terminal confirmation after opening Figma", false)
   .option("--use-url-node", "Use the node-id from the input URL as the frame to export", false)
+  .option(
+    "--canvas-board-screens",
+    "Detect phone-sized screens directly from the visible Figma canvas board",
+    false,
+  )
   .option("--all-left-sections", "Scroll the left Pages panel and export frames from every visible/discovered page", false)
   .option("--max-left-sections <count>", "Maximum left Pages panel sections to inspect", parsePositiveInt, 100)
   .option("--left-section <text>", "Only scan left Pages panel sections whose name contains this text")
@@ -84,6 +89,7 @@ program
       keepBrowserOpen: rawOptions.keepBrowserOpen,
       skipReadyPrompt: rawOptions.skipReadyPrompt,
       useUrlNode: rawOptions.useUrlNode,
+      canvasBoardScreens: rawOptions.canvasBoardScreens,
       allLeftSections: rawOptions.allLeftSections,
       maxLeftSections: rawOptions.maxLeftSections,
       leftSection: rawOptions.leftSection,

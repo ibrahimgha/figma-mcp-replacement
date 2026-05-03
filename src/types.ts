@@ -16,6 +16,23 @@ export interface FrameRecord {
   pageName?: string;
   source: FrameSource;
   url: string;
+  canvas?: CanvasSelectionBox;
+  layer?: LayerSelectionRef;
+  preCapturedScreenshot?: string;
+}
+
+export interface CanvasSelectionBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  order?: number;
+}
+
+export interface LayerSelectionRef {
+  name: string;
+  kind?: string;
+  occurrence?: number;
 }
 
 export interface AssetRecord {
@@ -33,6 +50,7 @@ export interface CandidateRecord {
   kind?: AssetKind;
   layerKind?: string;
   nodeId?: string;
+  occurrence?: number;
   confidence: number;
   reason: string;
 }
@@ -53,6 +71,7 @@ export interface ExporterOptions {
   keepBrowserOpen: boolean;
   skipReadyPrompt: boolean;
   useUrlNode: boolean;
+  canvasBoardScreens: boolean;
   allLeftSections: boolean;
   maxLeftSections: number;
   leftSection?: string;

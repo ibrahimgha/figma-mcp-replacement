@@ -1,9 +1,11 @@
 import type { Page } from "playwright";
-import type { AssetKind, CandidateRecord, FrameRecord, LeftSectionRecord } from "./types";
+import { PNG } from "pngjs";
+import path from "node:path";
+import type { AssetKind, CandidateRecord, CanvasSelectionBox, FrameRecord, LeftSectionRecord } from "./types";
 import type { ExporterConfig } from "./config";
 import { readNodeIdFromUrl, withNodeId } from "./utils/url";
 import { extensionForFormat, saveDownloadAs, type ExportFormat } from "./downloads";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import {
   cropPng,
   findFigmaSelectionCrop,
@@ -28,6 +30,18 @@ interface BrowserCandidate {
   reason: string;
   kind?: AssetKind;
   layerKind?: string;
+}
+
+interface CanvasScreenCandidate extends CanvasSelectionBox {
+  pixels: number;
+}
+
+interface MaskComponent {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+  pixels: number;
 }
 
 declare global {
@@ -69,18 +83,179 @@ export class FigmaUi {
   async discoverFrames(maxFrames: number): Promise<FrameRecord[]> {
     await this.ensureBrowserEvalHelpers();
     const candidates = await this.extractFrameCandidatesFromLayers(maxFrames);
+    return this.framesFromLayerCandidates(candidates);
+  }
+
+  async discoverReadyDevelopmentFrames(maxFrames: number, preCaptureDir?: string): Promise<FrameRecord[]> {
+    await this.ensureBrowserEvalHelpers();
+    const maxAttempts = 7;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const candidates = (await this.extractFrameCandidatesFromLayers(maxFrames))
+        .filter((candidate) => candidate.layerKind === "Ready for development");
+      if (candidates.length > 0) {
+        this.logger(`Using ${candidates.length} Ready for development row(s) from the visible Figma UI.`);
+        return this.framesFromLayerCandidates(candidates, preCaptureDir);
+      }
+      if (attempt < maxAttempts) {
+        this.logger(`Waiting for Figma's Ready for development rows ${attempt}/${maxAttempts}.`);
+        await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+      }
+    }
+    return [];
+  }
+
+  private async framesFromLayerCandidates(
+    candidates: CandidateRecord[],
+    preCaptureDir?: string,
+  ): Promise<FrameRecord[]> {
     const frames: FrameRecord[] = [];
     for (const candidate of candidates) {
       const selected = await this.clickFrameCandidateAndReadSelection(candidate);
       if (!selected?.nodeId) continue;
-      frames.push({
+      const frame: FrameRecord = {
         nodeId: selected.nodeId,
         name: candidate.name || selected.name,
         source: "auto",
         url: withNodeId(this.page.url(), selected.nodeId),
-      });
+        layer: {
+          name: candidate.name,
+          kind: candidate.layerKind,
+          occurrence: candidate.occurrence,
+        },
+      };
+      if (preCaptureDir) {
+        await mkdir(preCaptureDir, { recursive: true });
+        const target = path.join(preCaptureDir, `${selected.nodeId.replace(/:/g, "-")}.png`);
+        try {
+          frame.preCapturedScreenshot = await this.captureSelectedFrameScreenshot(target);
+        } catch (error) {
+          this.logger(`Pre-capture failed for ${frame.name} (${selected.nodeId}): ${error instanceof Error ? error.message : String(error)}.`);
+        }
+      }
+      frames.push(frame);
     }
     return frames;
+  }
+
+  async discoverCanvasBoardScreens(
+    figmaUrl: string,
+    maxFrames: number,
+    preCaptureDir?: string,
+  ): Promise<FrameRecord[]> {
+    await this.ensureBrowserEvalHelpers();
+    await this.page.waitForTimeout(Math.max(this.cooldownMs, 1600));
+
+    const readyFrames = await this.discoverReadyDevelopmentFrames(maxFrames, preCaptureDir);
+    if (readyFrames.length >= Math.min(30, maxFrames)) {
+      this.logger(`Selected ${readyFrames.length} screen frame(s) from Figma's Ready for development panel.`);
+      return readyFrames;
+    }
+    if (readyFrames.length > 0) {
+      this.logger(`Ready for development panel only yielded ${readyFrames.length} frame(s); falling back to canvas-board detection.`);
+    }
+
+    await this.ensureDesignModeForCanvasDiscovery();
+    await this.restoreCanvasBoardViewForDiscovery(maxFrames);
+
+    const boardNodeId = readNodeIdFromUrl(figmaUrl);
+    const boardName = (await this.readSelectedLayerName().catch(() => undefined)) ?? "Canvas board";
+    const ignoredNodeIds = new Set<string>(boardNodeId ? [boardNodeId] : []);
+    const candidates = await this.detectCanvasScreenCandidates(maxFrames);
+    this.logger(`Detected ${candidates.length} phone-screen candidate(s) on the visible canvas board.`);
+
+    const frames: FrameRecord[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < candidates.length; index += 1) {
+      let candidate = candidates[index];
+      if (index > 0) {
+        const restoredCandidates = await this.restoreCanvasBoardViewForDiscovery(maxFrames);
+        candidate = restoredCandidates[index] ?? nearestCanvasCandidate(candidate, restoredCandidates) ?? candidate;
+      }
+      const selected = await this.clickCanvasScreenCandidateAndReadSelection(candidate, ignoredNodeIds);
+      if (!selected?.nodeId) {
+        this.logger(`Canvas candidate ${index + 1}/${candidates.length} did not resolve to a concrete frame.`);
+        continue;
+      }
+      if (seen.has(selected.nodeId)) {
+        this.logger(`Canvas candidate ${index + 1}/${candidates.length} selected duplicate frame ${selected.name} (${selected.nodeId}).`);
+        continue;
+      }
+      const readableName = selected.name.trim();
+      const skipReason = readableName ? skipReasonForFrameCandidate({ name: readableName }) : undefined;
+      if (readableName && (skipReason || this.isCanvasDiscoveryNoise(readableName))) {
+        this.logger(`Skipping canvas selection ${readableName} (${selected.nodeId}): ${skipReason ?? "utility/board layer"}.`);
+        continue;
+      }
+      const frameName = readableName || `Screen ${String(index + 1).padStart(2, "0")}`;
+      seen.add(selected.nodeId);
+      const frame: FrameRecord = {
+        nodeId: selected.nodeId,
+        name: frameName,
+        pageName: boardName,
+        source: "auto",
+        url: withNodeId(figmaUrl, selected.nodeId),
+        canvas: {
+          x: candidate.x,
+          y: candidate.y,
+          width: candidate.width,
+          height: candidate.height,
+          order: index,
+        },
+      };
+      if (preCaptureDir) {
+        await mkdir(preCaptureDir, { recursive: true });
+        const target = path.join(preCaptureDir, `${selected.nodeId.replace(/:/g, "-")}.png`);
+        try {
+          frame.preCapturedScreenshot = await this.captureSelectedFrameScreenshot(target);
+        } catch (error) {
+          this.logger(`Pre-capture failed for ${frameName} (${selected.nodeId}): ${error instanceof Error ? error.message : String(error)}.`);
+        }
+      }
+      frames.push(frame);
+      this.logger(`Canvas screen ${frames.length}: ${frameName} (${selected.nodeId})`);
+      if (frames.length >= maxFrames) break;
+    }
+
+    this.logger(`Selected ${frames.length} unique canvas screen frame(s) from the visible board.`);
+    if (readyFrames.length > 0) {
+      const combined = uniqueFramesByNodeId([...readyFrames, ...frames]).slice(0, maxFrames);
+      this.logger(`Merged Ready panel and canvas discovery into ${combined.length} unique screen frame(s).`);
+      return combined;
+    }
+    return frames;
+  }
+
+  async selectCanvasDiscoveredFrame(
+    figmaUrl: string,
+    frame: FrameRecord,
+    maxFrames: number,
+  ): Promise<void> {
+    if (!frame.canvas) {
+      await this.selectNode(figmaUrl, frame.nodeId);
+      return;
+    }
+
+    const boardNodeId = readNodeIdFromUrl(figmaUrl);
+    const ignoredNodeIds = new Set<string>(boardNodeId ? [boardNodeId] : []);
+    const restoredCandidates = await this.restoreCanvasBoardViewForDiscovery(maxFrames);
+    const preferred = restoredCandidates[frame.canvas.order ?? -1] ?? nearestCanvasCandidate(frame.canvas, restoredCandidates) ?? {
+      ...frame.canvas,
+      pixels: 0,
+    };
+
+    let selected = await this.clickCanvasScreenCandidateAndReadSelection(preferred, ignoredNodeIds);
+    if (selected?.nodeId !== frame.nodeId && preferred !== frame.canvas) {
+      selected = await this.clickCanvasScreenCandidateAndReadSelection({ ...frame.canvas, pixels: 0 }, ignoredNodeIds);
+    }
+
+    if (!selected?.nodeId) {
+      throw new Error(`Could not reselect ${frame.name} from the warm canvas view.`);
+    }
+    if (selected.nodeId !== frame.nodeId) {
+      throw new Error(
+        `Warm canvas selection mismatch for ${frame.name}: expected ${frame.nodeId}, got ${selected.nodeId} (${selected.name}).`,
+      );
+    }
   }
 
   async discoverLeftSidebarSections(maxSections: number): Promise<LeftSectionRecord[]> {
@@ -342,13 +517,26 @@ export class FigmaUi {
     nodeId?: string;
     name: string;
   } | null> {
-    const clicked = await this.clickLayerRowByName(candidate.name, candidate.layerKind);
+    const clicked = await this.clickLayerRowByName(candidate.name, candidate.layerKind, candidate.occurrence);
     if (!clicked) return this.clickCandidateAndReadSelection(candidate);
     await this.page.waitForTimeout(this.cooldownMs);
     return {
       nodeId: readNodeIdFromUrl(this.page.url()),
       name: candidate.name,
     };
+  }
+
+  async selectFrameFromLayerRow(frame: FrameRecord): Promise<boolean> {
+    if (!frame.layer) return false;
+    const clicked = await this.clickLayerRowByName(
+      frame.layer.name,
+      frame.layer.kind,
+      frame.layer.occurrence,
+    );
+    if (!clicked) return false;
+    await this.page.waitForTimeout(this.cooldownMs);
+    const selectedNodeId = readNodeIdFromUrl(this.page.url());
+    return selectedNodeId === frame.nodeId;
   }
 
   async selectNode(figmaUrl: string, nodeId: string): Promise<void> {
@@ -409,8 +597,10 @@ export class FigmaUi {
       const maxAttempts = 8;
       let lastError: Error | undefined;
 
+      await this.zoomToSelection();
+      await this.clearSelectionForCleanCapture();
+
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        await this.zoomToSelection();
         const canvasBox = await this.visibleCanvasSearchBox();
         const screenshot = await this.page.screenshot({ fullPage: false });
 
@@ -445,6 +635,235 @@ export class FigmaUi {
     } finally {
       if (didHideUi) await this.showFigmaUiAfterCapture();
     }
+  }
+
+  private async restoreCanvasBoardViewForDiscovery(maxFrames: number): Promise<CanvasScreenCandidate[]> {
+    await this.page.keyboard.press("Shift+1").catch(() => undefined);
+    const maxAttempts = 5;
+    let lastCandidates: CanvasScreenCandidate[] = [];
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
+      const screenshot = await this.page.screenshot({ fullPage: false });
+      const { candidates } = findCanvasScreenCandidatesInScreenshot(screenshot, maxFrames);
+      lastCandidates = candidates;
+      if (candidates.length > 0) return candidates;
+      if (attempt < maxAttempts) {
+        await this.page.keyboard.press("Shift+1").catch(() => undefined);
+        this.logger(`Waiting for canvas board overview to repaint before next candidate ${attempt}/${maxAttempts}.`);
+      }
+    }
+    return lastCandidates;
+  }
+
+  private async ensureDesignModeForCanvasDiscovery(): Promise<void> {
+    await this.ensureBrowserEvalHelpers();
+    const inDevMode = await this.page.evaluate(() => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("m") === "dev") return true;
+      const visibleText = Array.from(document.querySelectorAll<HTMLElement>("button,[role='button'],[aria-label]"))
+        .filter((element) => Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length))
+        .map((element) =>
+          [
+            element.getAttribute("aria-label"),
+            element.getAttribute("data-tooltip"),
+            element.innerText,
+            element.textContent,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        )
+        .join(" ");
+      return /\bInspect\b/.test(visibleText) && /\bMCP\b/.test(visibleText);
+    });
+    if (!inDevMode) return;
+
+    const clicked = await this.page.evaluate(() => {
+      function clean(value: string | null | undefined): string {
+        return (value ?? "").replace(/\s+/g, " ").trim();
+      }
+
+      const controls = Array.from(document.querySelectorAll<HTMLElement>("button,[role='button']"))
+        .filter((element) => Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length));
+      const devMode = controls.find((element) => {
+        const text = [
+          element.getAttribute("aria-label"),
+          element.getAttribute("data-tooltip"),
+          element.innerText,
+          element.textContent,
+        ]
+          .map(clean)
+          .filter(Boolean)
+          .join(" ");
+        return /\bDev Mode\b/i.test(text);
+      });
+      if (!devMode) return false;
+      devMode.click();
+      return true;
+    });
+
+    if (clicked) {
+      this.logger("Switched Figma out of Dev Mode for canvas-board discovery.");
+      await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
+    }
+  }
+
+  private async detectCanvasScreenCandidates(maxFrames: number): Promise<CanvasScreenCandidate[]> {
+    const maxAttempts = 8;
+    let lastBoardBox: CropBox | undefined;
+    let lastCandidates: CanvasScreenCandidate[] = [];
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const screenshot = await this.page.screenshot({ fullPage: false });
+      const result = findCanvasScreenCandidatesInScreenshot(screenshot, maxFrames);
+      lastBoardBox = result.boardBox;
+      lastCandidates = result.candidates;
+      this.logger(
+        `Canvas board search area: x=${result.boardBox.x}, y=${result.boardBox.y}, width=${result.boardBox.width}, height=${result.boardBox.height}.`,
+      );
+      if (result.candidates.length > 0) return result.candidates;
+      if (attempt < maxAttempts) {
+        this.logger(`Canvas board is visible but screen thumbnails are not detected yet; waiting before retry ${attempt}/${maxAttempts}.`);
+        await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+      }
+    }
+
+    if (lastBoardBox) {
+      this.logger(
+        `Canvas screen detection ended with 0 candidates in x=${lastBoardBox.x}, y=${lastBoardBox.y}, width=${lastBoardBox.width}, height=${lastBoardBox.height}.`,
+      );
+    }
+    return lastCandidates;
+  }
+
+  private async clickCanvasScreenCandidateAndReadSelection(
+    candidate: CanvasScreenCandidate,
+    ignoredNodeIds: Set<string>,
+  ): Promise<{ nodeId?: string; name: string } | null> {
+    const offsets = [
+      { x: 0.5, y: 0.5 },
+      { x: 0.5, y: 0.42 },
+      { x: 0.5, y: 0.32 },
+      { x: 0.35, y: 0.5 },
+      { x: 0.65, y: 0.5 },
+      { x: 0.5, y: 0.72 },
+      { x: 0.12, y: 0.12 },
+      { x: 0.88, y: 0.12 },
+      { x: 0.12, y: 0.88 },
+      { x: 0.88, y: 0.88 },
+    ];
+    const waitMs = Math.max(700, Math.min(this.cooldownMs, 1400));
+
+    for (const offset of offsets) {
+      const x = Math.round(candidate.x + candidate.width * offset.x);
+      const y = Math.round(candidate.y + candidate.height * offset.y);
+      await this.page.mouse.click(x, y);
+      await this.page.waitForTimeout(waitMs);
+
+      const nodeId = readNodeIdFromUrl(this.page.url());
+      const name = (await this.readCanvasSelectedLayerName()) ?? "";
+      if (!nodeId || ignoredNodeIds.has(nodeId)) continue;
+      if (name && this.isCanvasDiscoveryNoise(name)) continue;
+
+      if (this.shouldClimbCanvasSelection(name)) {
+        const parent = await this.selectCanvasParentFrame(ignoredNodeIds);
+        if (parent?.nodeId && parent.name && !this.isCanvasDiscoveryNoise(parent.name)) {
+          return parent;
+        }
+        continue;
+      }
+
+      if (this.shouldRejectCanvasSelection(name)) continue;
+      return { nodeId, name };
+    }
+
+    return null;
+  }
+
+  private async selectCanvasParentFrame(
+    ignoredNodeIds: Set<string>,
+  ): Promise<{ nodeId?: string; name: string } | null> {
+    await this.page.keyboard.press("Shift+Enter").catch(() => undefined);
+    await this.page.waitForTimeout(Math.max(700, Math.min(this.cooldownMs, 1200)));
+    const nodeId = readNodeIdFromUrl(this.page.url());
+    const name = (await this.readCanvasSelectedLayerName()) ?? "";
+    if (!nodeId || ignoredNodeIds.has(nodeId) || !name) return null;
+    if (
+      this.isCanvasDiscoveryNoise(name) ||
+      this.shouldRejectCanvasSelection(name) ||
+      this.shouldClimbCanvasSelection(name)
+    ) {
+      return null;
+    }
+    return { nodeId, name };
+  }
+
+  private async readCanvasSelectedLayerName(): Promise<string | undefined> {
+    await this.ensureBrowserEvalHelpers();
+    const rightPanelName = await this.page.evaluate(() => {
+      function clean(value: string | null | undefined): string {
+        return (value ?? "").replace(/\s+/g, " ").trim();
+      }
+
+      function isVisible(element: Element): boolean {
+        const html = element as HTMLElement;
+        return Boolean(html.offsetWidth || html.offsetHeight || html.getClientRects().length);
+      }
+
+      const selectors = [
+        '[data-tooltip*="copy layer name" i]',
+        '[aria-label*="copy layer name" i]',
+        '[title*="copy layer name" i]',
+      ];
+      for (const selector of selectors) {
+        const elements = Array.from(document.querySelectorAll<HTMLElement>(selector))
+          .filter(isVisible)
+          .filter((element) => element.getBoundingClientRect().left > window.innerWidth * 0.55);
+        for (const element of elements) {
+          const copyName = [
+            element.getAttribute("aria-label"),
+            element.getAttribute("data-tooltip"),
+            element.getAttribute("title"),
+          ]
+            .map((value) => clean(value))
+            .map((value) => value.match(/^click to copy layer name:\s*(.+)$/i)?.[1]?.trim())
+            .find((value) => value && value.length <= 160);
+          if (copyName) return copyName;
+          const text = clean(element.innerText || element.textContent);
+          if (text && !/^click to copy layer name$/i.test(text) && text.length <= 160) return text;
+          const aria = clean(element.getAttribute("aria-label") || element.getAttribute("title"));
+          if (aria && !/^click to copy layer name$/i.test(aria) && aria.length <= 160) return aria;
+        }
+      }
+      return undefined;
+    });
+
+    return rightPanelName ?? this.readSelectedLayerName();
+  }
+
+  private isCanvasDiscoveryNoise(name: string): boolean {
+    const normalized = name.replace(/\s+/g, " ").trim();
+    return /^(registration(?:\s+darkmode)?|pointer|top|container|properties(?:\s+properties)?|screen label(?:\b|$)|section label(?:\b|$))$/i.test(
+      normalized,
+    );
+  }
+
+  private shouldClimbCanvasSelection(name: string): boolean {
+    const normalized = normalizeLayerNameForCanvas(name);
+    if (!normalized) return false;
+    return (
+      Boolean(skipReasonForFrameCandidate({ name: normalized })) ||
+      /^(inputfield|input field|arrow|content|icons?|image|avatar|button|label|text|title|subtitle|status bar|home indicator|checkbox|radio|divider|rectangle|vector|group(?:\s+\d+)?|untitled design\b)/i.test(
+        normalized,
+      )
+    );
+  }
+
+  private shouldRejectCanvasSelection(name: string): boolean {
+    const normalized = normalizeLayerNameForCanvas(name);
+    if (!normalized) return false;
+    return /^(inputfield|input field|arrow|content|icons?|image|avatar|button|label|text|title|subtitle|status bar|home indicator|checkbox|radio|divider|rectangle|vector|group(?:\s+\d+)?|untitled design\b)$/i.test(
+      normalized,
+    );
   }
 
   private async prepareExportSetting(format: ExportFormat): Promise<void> {
@@ -509,6 +928,14 @@ export class FigmaUi {
     await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
   }
 
+  private async clearSelectionForCleanCapture(): Promise<void> {
+    await this.page.keyboard.press("Escape").catch(() => undefined);
+    await this.page.waitForTimeout(120);
+    await this.page.keyboard.press("Escape").catch(() => undefined);
+    await this.page.mouse.move(4, 4).catch(() => undefined);
+    await this.page.waitForTimeout(Math.max(500, Math.min(this.cooldownMs, 1000)));
+  }
+
   private async hideFigmaUiForCapture(): Promise<boolean> {
     await this.ensureBrowserEvalHelpers();
     const uiVisible = await this.page.evaluate(() => {
@@ -556,10 +983,10 @@ export class FigmaUi {
     });
   }
 
-  private async clickLayerRowByName(name: string, layerKind?: string): Promise<boolean> {
+  private async clickLayerRowByName(name: string, layerKind?: string, occurrence = 1): Promise<boolean> {
     await this.ensureBrowserEvalHelpers();
     return this.page.evaluate(
-      async ({ targetName, targetKind }) => {
+      async ({ targetName, targetKind, targetOccurrence }) => {
         function clean(value: string | null | undefined): string {
           return (value ?? "").replace(/\s+/g, " ").trim();
         }
@@ -595,11 +1022,7 @@ export class FigmaUi {
           const row = layerRows()[0];
           let current = row?.parentElement;
           while (current) {
-            const style = window.getComputedStyle(current);
-            if (
-              current.scrollHeight > current.clientHeight + 20 &&
-              !/hidden/i.test(style.overflowY)
-            ) {
+            if (current.scrollHeight > current.clientHeight + 20) {
               return current;
             }
             current = current.parentElement;
@@ -622,26 +1045,31 @@ export class FigmaUi {
           : window.innerHeight;
         const original = scrollerElement ? scrollerElement.scrollTop : window.scrollY;
 
+        const seenRows = new WeakSet<HTMLElement>();
+        let occurrenceCount = 0;
+
         for (let top = 0; top <= max + 1; top += Math.max(120, Math.floor(pageSize * 0.75))) {
           if (scrollerElement) scrollerElement.scrollTop = top;
           else window.scrollTo(0, top);
           await settle();
-          const match = layerRows().find((row) => {
+          for (const row of layerRows()) {
+            if (seenRows.has(row)) continue;
+            seenRows.add(row);
             const info = rowInfo(row);
-            if (info.name !== targetName) return false;
-            if (targetKind && info.kind !== targetKind) return false;
-            return true;
-          });
-          if (match) {
-            match.scrollIntoView({ block: "center", inline: "nearest" });
+            if (info.name !== targetName) continue;
+            if (targetKind && info.kind !== targetKind) continue;
+            occurrenceCount += 1;
+            if (occurrenceCount !== targetOccurrence) continue;
+
+            row.scrollIntoView({ block: "center", inline: "nearest" });
             await settle();
-            const rect = match.getBoundingClientRect();
+            const rect = row.getBoundingClientRect();
             const x = rect.left + Math.min(rect.width / 2, 80);
             const y = rect.top + rect.height / 2;
-            match.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
-            match.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
-            match.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
-            match.click();
+            row.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+            row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+            row.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+            row.click();
             return true;
           }
         }
@@ -650,7 +1078,7 @@ export class FigmaUi {
         else window.scrollTo(0, original);
         return false;
       },
-      { targetName: name, targetKind: layerKind },
+      { targetName: name, targetKind: layerKind, targetOccurrence: occurrence },
     );
   }
 
@@ -660,6 +1088,7 @@ export class FigmaUi {
       type RowCandidate = {
         name: string;
         layerKind?: string;
+        occurrence?: number;
         confidence: number;
         reason: string;
       };
@@ -712,11 +1141,7 @@ export class FigmaUi {
         const row = rows()[0];
         let current = row?.parentElement;
         while (current) {
-          const style = window.getComputedStyle(current);
-          if (
-            current.scrollHeight > current.clientHeight + 20 &&
-            !/hidden/i.test(style.overflowY)
-          ) {
+          if (current.scrollHeight > current.clientHeight + 20) {
             return current;
           }
           current = current.parentElement;
@@ -736,7 +1161,8 @@ export class FigmaUi {
         ? Math.max(0, scrollerElement.scrollHeight - scrollerElement.clientHeight)
         : Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
       const pageSize = scrollerElement ? Math.max(160, scrollerElement.clientHeight) : window.innerHeight;
-      const seen = new Set<string>();
+      const seenRows = new WeakSet<HTMLElement>();
+      const occurrenceCounts = new Map<string, number>();
       const found: RowCandidate[] = [];
 
       for (let top = 0; top <= max + 1 && found.length < limit; top += Math.max(120, Math.floor(pageSize * 0.75))) {
@@ -744,12 +1170,14 @@ export class FigmaUi {
         else window.scrollTo(0, top);
         await settle();
         for (const row of rows()) {
+          if (seenRows.has(row)) continue;
+          seenRows.add(row);
           const candidate = rowInfo(row);
           if (!candidate) continue;
-          const key = `${candidate.layerKind}:${candidate.name}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          found.push(candidate);
+          const key = `${candidate.layerKind ?? ""}:${candidate.name}`;
+          const occurrence = (occurrenceCounts.get(key) ?? 0) + 1;
+          occurrenceCounts.set(key, occurrence);
+          found.push({ ...candidate, occurrence });
           if (found.length >= limit) break;
         }
       }
@@ -888,4 +1316,219 @@ export class FigmaUi {
     await this.page.keyboard.press(process.platform === "darwin" ? "Meta+\\" : "Control+\\").catch(() => undefined);
     await this.page.waitForTimeout(Math.max(1000, this.cooldownMs));
   }
+}
+
+function findCanvasScreenCandidatesInScreenshot(
+  screenshot: Buffer,
+  maxFrames: number,
+): { boardBox: CropBox; candidates: CanvasScreenCandidate[] } {
+  const png = PNG.sync.read(screenshot);
+  const boardBox = findLeftCanvasBoardBox(png);
+  const xStart = clamp(Math.floor(boardBox.x), 0, png.width - 1);
+  const yStart = clamp(Math.floor(boardBox.y), 0, png.height - 1);
+  const xEnd = clamp(Math.ceil(boardBox.x + boardBox.width), xStart + 1, png.width);
+  const yEnd = clamp(Math.ceil(boardBox.y + boardBox.height), yStart + 1, png.height);
+  const maskWidth = xEnd - xStart;
+  const maskHeight = yEnd - yStart;
+  const mask = new Uint8Array(maskWidth * maskHeight);
+
+  for (let y = yStart; y < yEnd; y += 1) {
+    for (let x = xStart; x < xEnd; x += 1) {
+      const offset = (y * png.width + x) * 4;
+      const r = png.data[offset];
+      const g = png.data[offset + 1];
+      const b = png.data[offset + 2];
+      const a = png.data[offset + 3];
+      if (isCanvasScreenPixel(r, g, b, a)) {
+        mask[(y - yStart) * maskWidth + (x - xStart)] = 1;
+      }
+    }
+  }
+
+  const visited = new Uint8Array(mask.length);
+  const candidates: CanvasScreenCandidate[] = [];
+  for (let index = 0; index < mask.length; index += 1) {
+    if (!mask[index] || visited[index]) continue;
+    const component = floodMask(mask, visited, maskWidth, maskHeight, index);
+    const width = component.xMax - component.xMin + 1;
+    const height = component.yMax - component.yMin + 1;
+    const aspect = width / height;
+    if (width < 14 || height < 20 || width > 120 || height > 120) continue;
+    if (component.pixels < 45) continue;
+    if (aspect < 0.22 || aspect > 2.6) continue;
+
+    candidates.push({
+      x: xStart + component.xMin,
+      y: yStart + component.yMin,
+      width,
+      height,
+      pixels: component.pixels,
+    });
+  }
+
+  return {
+    boardBox,
+    candidates: candidates
+      .sort((a, b) => a.y - b.y || a.x - b.x)
+      .slice(0, maxFrames),
+  };
+}
+
+function nearestCanvasCandidate(
+  target: CanvasSelectionBox,
+  candidates: CanvasScreenCandidate[],
+): CanvasScreenCandidate | undefined {
+  const targetX = target.x + target.width / 2;
+  const targetY = target.y + target.height / 2;
+  let best: { candidate: CanvasScreenCandidate; distance: number } | undefined;
+  for (const candidate of candidates) {
+    const x = candidate.x + candidate.width / 2;
+    const y = candidate.y + candidate.height / 2;
+    const distance = Math.hypot(x - targetX, y - targetY);
+    if (distance > 28) continue;
+    if (!best || distance < best.distance) best = { candidate, distance };
+  }
+  return best?.candidate;
+}
+
+function uniqueFramesByNodeId(frames: FrameRecord[]): FrameRecord[] {
+  const seen = new Set<string>();
+  const result: FrameRecord[] = [];
+  for (const frame of frames) {
+    if (seen.has(frame.nodeId)) continue;
+    seen.add(frame.nodeId);
+    result.push(frame);
+  }
+  return result;
+}
+
+function normalizeLayerNameForCanvas(value: string): string {
+  return value
+    .replace(/\s+(?:Edited|Created)\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findLeftCanvasBoardBox(png: PNG): CropBox {
+  const xStart = Math.floor(png.width * 0.12);
+  const xEnd = Math.floor(png.width * 0.62);
+  const yStart = 0;
+  const yEnd = Math.floor(png.height * 0.94);
+  const maskWidth = xEnd - xStart;
+  const maskHeight = yEnd - yStart;
+  const mask = new Uint8Array(maskWidth * maskHeight);
+
+  for (let y = yStart; y < yEnd; y += 1) {
+    for (let x = xStart; x < xEnd; x += 1) {
+      const offset = (y * png.width + x) * 4;
+      const r = png.data[offset];
+      const g = png.data[offset + 1];
+      const b = png.data[offset + 2];
+      const a = png.data[offset + 3];
+      if (isCanvasBoardBackgroundPixel(r, g, b, a)) {
+        mask[(y - yStart) * maskWidth + (x - xStart)] = 1;
+      }
+    }
+  }
+
+  const visited = new Uint8Array(mask.length);
+  let best: MaskComponent | undefined;
+  for (let index = 0; index < mask.length; index += 1) {
+    if (!mask[index] || visited[index]) continue;
+    const component = floodMask(mask, visited, maskWidth, maskHeight, index);
+    const width = component.xMax - component.xMin + 1;
+    const height = component.yMax - component.yMin + 1;
+    const area = width * height;
+    if (width < 220 || height < 300 || component.pixels < 40_000) continue;
+    const bestArea = best ? (best.xMax - best.xMin + 1) * (best.yMax - best.yMin + 1) : 0;
+    if (!best || component.xMin < best.xMin - 20 || (Math.abs(component.xMin - best.xMin) <= 20 && area > bestArea)) {
+      best = component;
+    }
+  }
+
+  if (!best) {
+    return {
+      x: Math.floor(png.width * 0.19),
+      y: Math.floor(png.height * 0.02),
+      width: Math.floor(png.width * 0.31),
+      height: Math.floor(png.height * 0.86),
+    };
+  }
+
+  const padding = 6;
+  const x = clamp(xStart + best.xMin - padding, 0, png.width - 1);
+  const y = clamp(yStart + best.yMin - padding, 0, png.height - 1);
+  const x2 = clamp(xStart + best.xMax + 1 + padding, x + 1, png.width);
+  const y2 = clamp(yStart + best.yMax + 1 + padding, y + 1, png.height);
+  return { x, y, width: x2 - x, height: y2 - y };
+}
+
+function isCanvasBoardBackgroundPixel(r: number, g: number, b: number, a: number): boolean {
+  if (a < 180) return false;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const brightness = (r + g + b) / 3;
+  return max - min <= 6 && brightness >= 52 && brightness <= 82;
+}
+
+function isCanvasScreenPixel(r: number, g: number, b: number, a: number): boolean {
+  if (a < 180) return false;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const brightness = (r + g + b) / 3;
+  const saturation = max - min;
+
+  if (isCanvasBoardBackgroundPixel(r, g, b, a)) return false;
+  if (brightness <= 45 && saturation <= 18) return false;
+  if (g >= 205 && r >= 150 && b >= 175 && saturation >= 15 && g - r >= 20) return false;
+  if (g >= 145 && r <= 95 && b <= 155) return false;
+  if (r >= 200 && g <= 120 && b >= 120) return false;
+
+  return brightness >= 78 || saturation >= 38;
+}
+
+function floodMask(
+  mask: Uint8Array,
+  visited: Uint8Array,
+  width: number,
+  height: number,
+  start: number,
+): MaskComponent {
+  const queue = [start];
+  visited[start] = 1;
+  let head = 0;
+  let xMin = start % width;
+  let xMax = xMin;
+  let yMin = Math.floor(start / width);
+  let yMax = yMin;
+  let pixels = 0;
+
+  while (head < queue.length) {
+    const index = queue[head++];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    pixels += 1;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+
+    const neighbors = [
+      x > 0 ? index - 1 : -1,
+      x < width - 1 ? index + 1 : -1,
+      y > 0 ? index - width : -1,
+      y < height - 1 ? index + width : -1,
+    ];
+    for (const neighbor of neighbors) {
+      if (neighbor < 0 || visited[neighbor] || !mask[neighbor]) continue;
+      visited[neighbor] = 1;
+      queue.push(neighbor);
+    }
+  }
+
+  return { xMin, yMin, xMax, yMax, pixels };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

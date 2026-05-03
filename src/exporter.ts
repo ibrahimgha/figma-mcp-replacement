@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 import type { AssetRecord, BrowserSessionInfo, CandidateRecord, ExporterOptions, FrameRecord } from "./types";
 import { loadConfig } from "./config";
 import { launchVisibleBrowser } from "./browserLauncher";
@@ -47,8 +47,11 @@ export class FigmaBrowserExporter {
       if (!this.options.allowFigmaWrites) {
         this.log("Write prevention active: using canvas screenshots and screenshot-derived assets only.");
       }
-      this.log(`Opening ${this.options.figmaUrl}`);
-      await page.goto(this.options.figmaUrl, { waitUntil: "domcontentloaded" });
+      const openUrl = this.options.canvasBoardScreens
+        ? withQueryParam(this.options.figmaUrl, "m", "dev")
+        : this.options.figmaUrl;
+      this.log(`Opening ${openUrl}`);
+      await page.goto(openUrl, { waitUntil: "domcontentloaded" });
       await ui.waitForEditor();
       if (this.options.skipReadyPrompt) {
         this.log("Skipping ready prompt.");
@@ -58,6 +61,12 @@ export class FigmaBrowserExporter {
 
       const initialFrames = this.filterFramesByName(this.options.useUrlNode
         ? await this.frameFromInputUrl(ui)
+        : this.options.canvasBoardScreens
+          ? dedupeFrames(await ui.discoverCanvasBoardScreens(
+              this.options.figmaUrl,
+              this.options.maxAutoFrames,
+              path.join(this.cwd, ".figma-browser-export", "precaptures", String(Date.now())),
+            ))
         : this.options.allLeftSections
           ? await this.discoverFramesAcrossLeftSections(ui)
           : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames)));
@@ -213,12 +222,7 @@ export class FigmaBrowserExporter {
       });
 
       try {
-        await ui.selectNode(this.options.figmaUrl, frame.nodeId);
-        const screenshotMode = this.effectiveScreenshotMode();
-        const screenshot =
-          screenshotMode === "canvas"
-            ? await ui.captureSelectedFrameScreenshot(path.join(frameDir, "screenshot.png"))
-            : await ui.exportSelectedAs("PNG", path.join(frameDir, "screenshot.png"));
+        const screenshot = await this.captureFrameScreenshot(ui, frame, frameDir);
         addScreenshot(manifest, frameDir, screenshot);
       } catch (error) {
         manifest.errors.push(`Frame screenshot export failed: ${formatError(error)}`);
@@ -276,7 +280,7 @@ export class FigmaBrowserExporter {
 
     let candidates: CandidateRecord[] = [];
     try {
-      await ui.selectNode(this.options.figmaUrl, frame.nodeId);
+      await this.selectFrameForExport(ui, frame);
       candidates = await ui.discoverAssetCandidates(this.options.maxAssetsPerFrame);
     } catch (error) {
       errors.push(`Asset discovery failed: ${formatError(error)}`);
@@ -479,6 +483,33 @@ export class FigmaBrowserExporter {
     if (!this.options.allowFigmaWrites) return "canvas";
     return this.options.screenshotMode === "native" ? "native" : "canvas";
   }
+
+  private async captureFrameScreenshot(ui: FigmaUi, frame: FrameRecord, frameDir: string): Promise<string> {
+    const target = path.join(frameDir, "screenshot.png");
+    if (frame.preCapturedScreenshot) {
+      await copyFile(frame.preCapturedScreenshot, target);
+      return target;
+    }
+
+    await this.selectFrameForExport(ui, frame);
+    const screenshotMode = this.effectiveScreenshotMode();
+    return screenshotMode === "canvas"
+      ? ui.captureSelectedFrameScreenshot(target)
+      : ui.exportSelectedAs("PNG", target);
+  }
+
+  private async selectFrameForExport(ui: FigmaUi, frame: FrameRecord): Promise<void> {
+    if (this.options.canvasBoardScreens && frame.layer) {
+      const selectedFromLayer = await ui.selectFrameFromLayerRow(frame);
+      if (selectedFromLayer) return;
+      this.log(`Layer-row reselection failed for ${frame.name}; trying stored canvas position.`);
+    }
+    if (this.options.canvasBoardScreens && frame.canvas) {
+      await ui.selectCanvasDiscoveredFrame(this.options.figmaUrl, frame, this.options.maxAutoFrames);
+      return;
+    }
+    await ui.selectNode(this.options.figmaUrl, frame.nodeId);
+  }
 }
 
 function formatError(error: unknown): string {
@@ -491,4 +522,10 @@ function normalizeForMatch(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function withQueryParam(input: string, key: string, value: string): string {
+  const url = new URL(input);
+  url.searchParams.set(key, value);
+  return url.toString();
 }
