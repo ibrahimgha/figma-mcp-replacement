@@ -71,6 +71,7 @@ export interface ExporterOptions {
   keepBrowserOpen: boolean;
   skipReadyPrompt: boolean;
   useUrlNode: boolean;
+  requiredKnownOnly: boolean;
   canvasBoardScreens: boolean;
   allLeftSections: boolean;
   maxLeftSections: number;

@@ -3,7 +3,7 @@ import { PNG } from "pngjs";
 import path from "node:path";
 import type { AssetKind, CandidateRecord, CanvasSelectionBox, FrameRecord, LeftSectionRecord } from "./types";
 import type { ExporterConfig } from "./config";
-import { readNodeIdFromUrl, withNodeId } from "./utils/url";
+import { parseFigmaUrl, readNodeIdFromUrl, withNodeId } from "./utils/url";
 import { extensionForFormat, saveDownloadAs, type ExportFormat } from "./downloads";
 import { mkdir, writeFile } from "node:fs/promises";
 import {
@@ -57,6 +57,7 @@ export class FigmaUi {
   private readonly cooldownMs: number;
   private readonly downloadTimeoutMs: number;
   private readonly logger: (message: string) => void;
+  private softNodeSelectionUnavailable = false;
 
   constructor(args: FigmaUiArgs) {
     this.page = args.page;
@@ -555,13 +556,26 @@ export class FigmaUi {
     const targetUrl = withNodeId(figmaUrl, nodeId);
     let lastName: string | undefined;
     for (let attempt = 1; attempt <= 4; attempt += 1) {
-      await this.page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-      await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+      let usedSoftSelection = false;
+      if (attempt === 1 && !this.softNodeSelectionUnavailable && isSameFigmaFileUrl(this.page.url(), targetUrl)) {
+        await this.softSelectNode(targetUrl);
+        usedSoftSelection = true;
+      } else {
+        await this.page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+      }
+      await this.page.waitForTimeout(
+        usedSoftSelection ? Math.min(this.cooldownMs, 800) : Math.max(this.cooldownMs, 2500),
+      );
 
       const selectedNodeId = readNodeIdFromUrl(this.page.url());
       lastName = await this.readCanvasSelectedLayerName().catch(() => undefined);
-      if (selectedNodeId === nodeId && (!expectedName || !lastName || selectedLayerNameMatches(lastName, expectedName))) {
+      const selectedNameMatches =
+        !expectedName || Boolean(lastName && selectedLayerNameMatches(lastName, expectedName));
+      if (selectedNodeId === nodeId && selectedNameMatches) {
         return;
+      }
+      if (usedSoftSelection) {
+        this.softNodeSelectionUnavailable = true;
       }
 
       if (attempt < 4) {
@@ -578,6 +592,13 @@ export class FigmaUi {
     throw new Error(
       `Figma did not select requested node ${nodeId}${expectedName ? ` (${expectedName})` : ""}; last selected layer was ${lastName ?? "unknown"}.`,
     );
+  }
+
+  private async softSelectNode(targetUrl: string): Promise<void> {
+    await this.page.evaluate((url) => {
+      window.history.pushState(null, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, targetUrl);
   }
 
   async readSelectedLayerName(): Promise<string | undefined> {
@@ -1610,4 +1631,14 @@ function floodMask(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function isSameFigmaFileUrl(currentUrl: string, targetUrl: string): boolean {
+  try {
+    const current = parseFigmaUrl(currentUrl);
+    const target = parseFigmaUrl(targetUrl);
+    return Boolean(current.fileKey && current.fileKey === target.fileKey);
+  } catch {
+    return false;
+  }
 }

@@ -2,6 +2,7 @@ import path from "node:path";
 import { createInterface, type Interface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { copyFile, readFile, writeFile } from "node:fs/promises";
+import type { Page } from "playwright";
 import type { AssetRecord, BrowserSessionInfo, CandidateRecord, ExporterOptions, FrameRecord } from "./types";
 import { loadConfig } from "./config";
 import { launchVisibleBrowser } from "./browserLauncher";
@@ -14,7 +15,7 @@ import type { ExportFormat } from "./downloads";
 import { openFileInBrowser, writePromptReport, type PromptReportEntry } from "./promptReport";
 import { cropPng, findIllustrationAssetCrops } from "./imageCrop";
 import { skipReasonForLeftSection } from "./frameFilters";
-import { appendMissingRequiredKnownFrames } from "./knownScreens";
+import { appendMissingRequiredKnownFrames, requiredKnownFramesForUrl } from "./knownScreens";
 
 export class FigmaBrowserExporter {
   private readonly options: ExporterOptions;
@@ -33,7 +34,11 @@ export class FigmaBrowserExporter {
       browser: this.options.browser,
       profileDir: this.options.profileDir,
     });
-    const page = launch.context.pages()[0] ?? (await launch.context.newPage());
+    const openUrl = this.options.canvasBoardScreens
+      ? withQueryParam(this.options.figmaUrl, "m", "dev")
+      : this.options.figmaUrl;
+    const page = findReusableFigmaPage(launch.context.pages(), openUrl) ?? (await launch.context.newPage());
+    await page.setViewportSize({ width: 1920, height: 1080 }).catch(() => undefined);
     const ui = new FigmaUi({
       page,
       config,
@@ -48,9 +53,6 @@ export class FigmaBrowserExporter {
       if (!this.options.allowFigmaWrites) {
         this.log("Write prevention active: using canvas screenshots and screenshot-derived assets only.");
       }
-      const openUrl = this.options.canvasBoardScreens
-        ? withQueryParam(this.options.figmaUrl, "m", "dev")
-        : this.options.figmaUrl;
       if (launch.reusedExistingBrowser) {
         this.log("Reusing the existing visible browser session.");
       }
@@ -69,6 +71,8 @@ export class FigmaBrowserExporter {
 
       const discoveredFrames = this.options.useUrlNode
         ? await this.frameFromInputUrl(ui)
+        : this.options.requiredKnownOnly
+          ? this.requiredKnownFramesOnly()
         : this.options.canvasBoardScreens
           ? dedupeFrames(await ui.discoverCanvasBoardScreens(
               this.options.figmaUrl,
@@ -356,7 +360,7 @@ export class FigmaBrowserExporter {
       const name = crops.length === 1 ? "Detected illustration" : `Detected illustration ${index + 1}`;
       const filePath = path.join(
         assetsDir,
-        `${sanitizeFilename(frame.name, "screen")}-illustration-${index + 1}.png`,
+        `illustration-${index + 1}.png`,
       );
       try {
         await writeFile(filePath, cropPng(screenshot, crop.box));
@@ -493,12 +497,18 @@ export class FigmaBrowserExporter {
     const result = appendMissingRequiredKnownFrames(this.options.figmaUrl, frames);
     if (result.added.length > 0) {
       this.log(
-        `Added ${result.added.length} required Registration result screen(s) that live discovery missed: ${result.added
+        `Added ${result.added.length} required Registration screen anchor(s) that live discovery missed: ${result.added
           .map((frame) => `${frame.name} (${frame.nodeId})`)
           .join(", ")}.`,
       );
     }
     return result.frames;
+  }
+
+  private requiredKnownFramesOnly(): FrameRecord[] {
+    const frames = requiredKnownFramesForUrl(this.options.figmaUrl);
+    this.log(`Using ${frames.length} required known screen anchor(s) for this Figma URL.`);
+    return frames;
   }
 
   private effectiveScreenshotMode(): "canvas" | "native" {
@@ -558,6 +568,25 @@ function isSameFigmaTarget(currentUrl: string, targetUrl: string): boolean {
     const target = parseFigmaUrl(targetUrl);
     if (!current.fileKey || current.fileKey !== target.fileKey) return false;
     return (current.nodeId ?? "") === (target.nodeId ?? "");
+  } catch {
+    return false;
+  }
+}
+
+function findReusableFigmaPage(pages: Page[], targetUrl: string): Page | undefined {
+  return (
+    pages.find((page) => isSameFigmaTarget(page.url(), targetUrl)) ??
+    pages.find((page) => isSameFigmaFile(page.url(), targetUrl)) ??
+    pages.find((page) => /^https:\/\/(?:www\.)?figma\.com\//i.test(page.url())) ??
+    pages[0]
+  );
+}
+
+function isSameFigmaFile(currentUrl: string, targetUrl: string): boolean {
+  try {
+    const current = parseFigmaUrl(currentUrl);
+    const target = parseFigmaUrl(targetUrl);
+    return Boolean(current.fileKey && current.fileKey === target.fileKey);
   } catch {
     return false;
   }

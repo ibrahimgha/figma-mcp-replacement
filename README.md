@@ -25,6 +25,7 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Detects frame-like screens from Figma's visible Layers UI and Dev Mode "Ready for development" cards.
 - Can detect small phone screens directly from a visible canvas board with `--canvas-board-screens`, useful when Dev Mode only lists a subset of the real board.
 - In canvas-board mode, opens the file once in Dev Mode, merges Ready-for-development rows with canvas-detected screens, and pre-captures selected canvas screens immediately to avoid repeated per-screen URL refreshes.
+- For known trouble boards, can skip flaky discovery and export built-in required screen anchors with `--required-known-only`.
 - Uses feedback-learned filters to skip obvious non-screen rows such as cover/overview pages, labels, raw image frames, device mock frames, and generic numbered frames.
 - Lets you review, add, or remove frames before exporting.
 - Exports every selected frame into its own folder.
@@ -82,6 +83,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt 
 node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode auto
 node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --screenshot-mode canvas --asset-mode auto
 node --import tsx .\src\cli.ts "<figma-url>" --canvas-board-screens --screenshot-mode canvas --asset-mode auto --keep-browser-open
+node --import tsx .\src\cli.ts "https://www.figma.com/design/7HszZb9F00XXRAAR9LGIVr/OZ-Mobile-App?node-id=415-634&p=f" --required-known-only --screenshot-mode canvas --asset-mode auto --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --left-section "Registration" --frame-name-match "Registration - light mode|OTP Error|failed"
 node --import tsx .\src\cli.ts "<figma-url>" --allow-figma-writes --screenshot-mode native
 ```

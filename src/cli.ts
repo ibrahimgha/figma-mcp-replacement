@@ -62,6 +62,11 @@ program
   .option("--skip-ready-prompt", "Do not wait for terminal confirmation after opening Figma", false)
   .option("--use-url-node", "Use the node-id from the input URL as the frame to export", false)
   .option(
+    "--required-known-only",
+    "Export only the built-in required screen anchors for supported Figma URLs",
+    false,
+  )
+  .option(
     "--canvas-board-screens",
     "Detect phone-sized screens directly from the visible Figma canvas board",
     false,
@@ -89,6 +94,7 @@ program
       keepBrowserOpen: rawOptions.keepBrowserOpen,
       skipReadyPrompt: rawOptions.skipReadyPrompt,
       useUrlNode: rawOptions.useUrlNode,
+      requiredKnownOnly: rawOptions.requiredKnownOnly,
       canvasBoardScreens: rawOptions.canvasBoardScreens,
       allLeftSections: rawOptions.allLeftSections,
       maxLeftSections: rawOptions.maxLeftSections,
