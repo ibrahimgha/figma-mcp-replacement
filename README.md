@@ -24,6 +24,7 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Exports every selected frame into its own folder.
 - For Dev Mode/view-only files, can hide the Figma UI, zoom to each selected frame, and crop the selected frame outline with `--screenshot-mode canvas`.
 - Exports rendered assets as PNG/SVG through Figma's UI when possible.
+- In canvas screenshot mode, derives standalone illustration/icon PNG assets from the screen screenshot when nested Figma asset export is unavailable.
 - Writes a `manifest.json` for every exported frame.
 - Generates `prompts.html` with:
   - One prompt per screen, in export order
@@ -71,7 +72,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --asset-mode manual
 node --import tsx .\src\cli.ts "<figma-url>" --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
-node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode none
+node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode auto
 ```
 
 ## Workflow
@@ -110,6 +111,8 @@ The prompt HTML page is intended for quick run verification and copy/paste hando
 ## Asset Behavior
 
 Pure browser UI mode cannot guarantee original uploaded image bytes. This tool exports rendered assets by selecting image-like layers as PNG and vector-like layers as SVG through Figma's export UI.
+
+For Dev Mode/view-only files, use `--screenshot-mode canvas --asset-mode auto`. The tool will save the selected screen crop, then derive standalone illustration/icon PNG assets from that screenshot. This catches common empty-state illustrations and icons even when Figma's native export panel is unavailable.
 
 If automatic asset discovery is noisy, run with manual asset mode:
 

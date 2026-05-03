@@ -1,6 +1,11 @@
 import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
-import { cropPng, findFigmaSelectionCrop, findLargestForegroundCrop } from "../src/imageCrop";
+import {
+  cropPng,
+  findFigmaSelectionCrop,
+  findIllustrationAssetCrops,
+  findLargestForegroundCrop,
+} from "../src/imageCrop";
 
 describe("image crop helpers", () => {
   it("finds and crops the selected Figma frame outline", () => {
@@ -35,6 +40,20 @@ describe("image crop helpers", () => {
       width: 226,
       height: 166,
     });
+  });
+
+  it("extracts standalone illustration clusters while ignoring edge selection borders", () => {
+    const png = new PNG({ width: 435, height: 688 });
+    fill(png, 252, 252, 252);
+    drawBlueRect(png, 0, 0, 435, 688);
+    drawRect(png, 166, 233, 101, 100, 224, 231, 126);
+    drawBlueRect(png, 196, 259, 41, 50);
+    drawBlueRect(png, 152, 317, 30, 22);
+    drawBlueRect(png, 255, 317, 30, 22);
+
+    const assets = findIllustrationAssetCrops(PNG.sync.write(png));
+    expect(assets).toHaveLength(1);
+    expect(assets[0].box).toEqual({ x: 140, y: 221, width: 157, height: 130 });
   });
 });
 

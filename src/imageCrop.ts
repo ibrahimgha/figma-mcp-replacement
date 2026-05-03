@@ -7,6 +7,12 @@ export interface CropBox {
   height: number;
 }
 
+export interface DetectedAssetCrop {
+  box: CropBox;
+  confidence: number;
+  reason: string;
+}
+
 interface Component {
   xMin: number;
   yMin: number;
@@ -141,6 +147,49 @@ export function findLargestForegroundCrop(buffer: Buffer, searchBox?: CropBox): 
   };
 }
 
+export function findIllustrationAssetCrops(buffer: Buffer, maxAssets = 5): DetectedAssetCrop[] {
+  const png = PNG.sync.read(buffer);
+  const mask = new Uint8Array(png.width * png.height);
+
+  for (let y = 0; y < png.height; y += 1) {
+    for (let x = 0; x < png.width; x += 1) {
+      const offset = (y * png.width + x) * 4;
+      const r = png.data[offset];
+      const g = png.data[offset + 1];
+      const b = png.data[offset + 2];
+      const a = png.data[offset + 3];
+      if (isIllustrationPixel(r, g, b, a)) {
+        mask[y * png.width + x] = 1;
+      }
+    }
+  }
+
+  const visited = new Uint8Array(mask.length);
+  const components: Array<CropBox & { pixels: number }> = [];
+
+  for (let index = 0; index < mask.length; index += 1) {
+    if (!mask[index] || visited[index]) continue;
+    const component = flood(mask, visited, png.width, png.height, index);
+    const box = componentToBox(component);
+    if (component.pixels < 8 || box.width < 3 || box.height < 3) continue;
+    if (touchesImageEdge(box, png.width, png.height, 3)) continue;
+    components.push({ ...box, pixels: component.pixels });
+  }
+
+  const merged = mergeNearbyBoxes(components, 36)
+    .map((box) => padBox(box, 12, png.width, png.height))
+    .filter((box) => isLikelyStandaloneAsset(box, png.width, png.height));
+
+  return merged
+    .map((box) => ({
+      box,
+      confidence: scoreAssetBox(box, png.width, png.height),
+      reason: "colored illustration/icon cluster in the screen screenshot",
+    }))
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, maxAssets);
+}
+
 function flood(
   mask: Uint8Array,
   visited: Uint8Array,
@@ -195,6 +244,100 @@ function isForegroundPixel(r: number, g: number, b: number, a: number): boolean 
   if (brightness <= 62 && max <= 95) return false;
   if (max - min < 18 && brightness < 84) return false;
   return max >= 88 || brightness >= 96;
+}
+
+function isIllustrationPixel(r: number, g: number, b: number, a: number): boolean {
+  if (a < 180) return false;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const brightness = (r + g + b) / 3;
+  const saturation = max - min;
+  if (brightness > 235 && saturation < 35) return false;
+  if (brightness < 80) return false;
+  return saturation >= 30;
+}
+
+function componentToBox(component: Component): CropBox {
+  return {
+    x: component.xMin,
+    y: component.yMin,
+    width: component.xMax - component.xMin + 1,
+    height: component.yMax - component.yMin + 1,
+  };
+}
+
+function mergeNearbyBoxes(boxes: CropBox[], gap: number): CropBox[] {
+  const merged = boxes.map((box) => ({ ...box }));
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    outer: for (let i = 0; i < merged.length; i += 1) {
+      for (let j = i + 1; j < merged.length; j += 1) {
+        if (!boxesNear(merged[i], merged[j], gap)) continue;
+        merged[i] = unionBoxes(merged[i], merged[j]);
+        merged.splice(j, 1);
+        changed = true;
+        break outer;
+      }
+    }
+  }
+
+  return merged;
+}
+
+function boxesNear(a: CropBox, b: CropBox, gap: number): boolean {
+  return !(
+    a.x + a.width + gap < b.x ||
+    b.x + b.width + gap < a.x ||
+    a.y + a.height + gap < b.y ||
+    b.y + b.height + gap < a.y
+  );
+}
+
+function unionBoxes(a: CropBox, b: CropBox): CropBox {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const x2 = Math.max(a.x + a.width, b.x + b.width);
+  const y2 = Math.max(a.y + a.height, b.y + b.height);
+  return { x, y, width: x2 - x, height: y2 - y };
+}
+
+function padBox(box: CropBox, padding: number, imageWidth: number, imageHeight: number): CropBox {
+  const x = clamp(box.x - padding, 0, imageWidth - 1);
+  const y = clamp(box.y - padding, 0, imageHeight - 1);
+  const x2 = clamp(box.x + box.width + padding, x + 1, imageWidth);
+  const y2 = clamp(box.y + box.height + padding, y + 1, imageHeight);
+  return { x, y, width: x2 - x, height: y2 - y };
+}
+
+function isLikelyStandaloneAsset(box: CropBox, imageWidth: number, imageHeight: number): boolean {
+  const area = box.width * box.height;
+  const imageArea = imageWidth * imageHeight;
+  if (box.width < 40 || box.height < 40) return false;
+  if (area < 1400 || area > imageArea * 0.28) return false;
+  if (touchesImageEdge(box, imageWidth, imageHeight, 4)) return false;
+  const aspect = box.width / box.height;
+  return aspect >= 0.25 && aspect <= 4;
+}
+
+function scoreAssetBox(box: CropBox, imageWidth: number, imageHeight: number): number {
+  const areaScore = Math.min(1, (box.width * box.height) / (imageWidth * imageHeight * 0.08));
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  const dx = Math.abs(centerX - imageWidth / 2) / (imageWidth / 2);
+  const dy = Math.abs(centerY - imageHeight / 2) / (imageHeight / 2);
+  const centerScore = 1 - Math.min(1, (dx + dy) / 2);
+  return Number((areaScore * 0.65 + centerScore * 0.35).toFixed(4));
+}
+
+function touchesImageEdge(box: CropBox, imageWidth: number, imageHeight: number, margin: number): boolean {
+  return (
+    box.x <= margin ||
+    box.y <= margin ||
+    box.x + box.width >= imageWidth - margin ||
+    box.y + box.height >= imageHeight - margin
+  );
 }
 
 function clamp(value: number, min: number, max: number): number {

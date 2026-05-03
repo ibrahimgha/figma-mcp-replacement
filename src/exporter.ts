@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createInterface, type Interface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { readFile, writeFile } from "node:fs/promises";
 import type { AssetRecord, BrowserSessionInfo, CandidateRecord, ExporterOptions, FrameRecord } from "./types";
 import { loadConfig } from "./config";
 import { launchVisibleBrowser } from "./browserLauncher";
@@ -11,6 +12,7 @@ import { frameFolderName, ensureDir, sanitizeFilename, toPosixRelative } from ".
 import { parseFigmaUrl, readNodeIdFromUrl, withNodeId } from "./utils/url";
 import type { ExportFormat } from "./downloads";
 import { openFileInBrowser, writePromptReport, type PromptReportEntry } from "./promptReport";
+import { cropPng, findIllustrationAssetCrops } from "./imageCrop";
 
 export class FigmaBrowserExporter {
   private readonly options: ExporterOptions;
@@ -214,6 +216,11 @@ export class FigmaBrowserExporter {
       return;
     }
 
+    if (this.options.screenshotMode === "canvas") {
+      await this.exportDerivedScreenshotAssets(frame, assetsDir, frameDir, assets, errors);
+      return;
+    }
+
     let candidates: CandidateRecord[] = [];
     try {
       await ui.selectNode(this.options.figmaUrl, frame.nodeId);
@@ -240,6 +247,69 @@ export class FigmaBrowserExporter {
         name: selected.name || candidate.name,
         kind: candidate.kind,
       });
+    }
+
+    if (!assets.some((asset) => asset.status === "exported")) {
+      await this.exportDerivedScreenshotAssets(frame, assetsDir, frameDir, assets, errors);
+    }
+  }
+
+  private async exportDerivedScreenshotAssets(
+    frame: FrameRecord,
+    assetsDir: string,
+    frameDir: string,
+    assets: AssetRecord[],
+    errors: string[],
+  ): Promise<void> {
+    const screenshotPath = path.join(frameDir, "screenshot.png");
+    let screenshot: Buffer;
+    try {
+      screenshot = await readFile(screenshotPath);
+    } catch (error) {
+      errors.push(`Screenshot-derived asset extraction skipped: ${formatError(error)}`);
+      return;
+    }
+
+    const crops = findIllustrationAssetCrops(
+      screenshot,
+      Math.max(1, Math.min(8, this.options.maxAssetsPerFrame)),
+    );
+    if (crops.length === 0) {
+      assets.push({
+        nodeId: `${frame.nodeId}#derived-assets`,
+        name: "Derived screenshot assets",
+        kind: "rendered-image",
+        status: "skipped",
+        reason: "No standalone illustration/icon clusters were detected in the screen screenshot.",
+      });
+      return;
+    }
+
+    for (const [index, crop] of crops.entries()) {
+      const name = crops.length === 1 ? "Detected illustration" : `Detected illustration ${index + 1}`;
+      const filePath = path.join(
+        assetsDir,
+        `${sanitizeFilename(frame.name, "screen")}-illustration-${index + 1}.png`,
+      );
+      try {
+        await writeFile(filePath, cropPng(screenshot, crop.box));
+        assets.push({
+          nodeId: `${frame.nodeId}#derived-${index + 1}`,
+          name,
+          kind: "rendered-image",
+          file: toPosixRelative(frameDir, filePath),
+          status: "exported",
+          reason: crop.reason,
+        });
+      } catch (error) {
+        assets.push({
+          nodeId: `${frame.nodeId}#derived-${index + 1}`,
+          name,
+          kind: "rendered-image",
+          status: "failed",
+          reason: formatError(error),
+        });
+      }
     }
   }
 
