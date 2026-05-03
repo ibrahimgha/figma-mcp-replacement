@@ -147,6 +147,57 @@ export function findLargestForegroundCrop(buffer: Buffer, searchBox?: CropBox): 
   };
 }
 
+export function isLikelyFigmaLoadingScreenshot(buffer: Buffer): boolean {
+  const png = PNG.sync.read(buffer);
+  const totalPixels = png.width * png.height;
+  if (totalPixels < 160_000) return false;
+
+  let opaquePixels = 0;
+  let loadingGrayPixels = 0;
+  let coloredPixels = 0;
+  let darkPixels = 0;
+  let brightnessSum = 0;
+  let saturationSum = 0;
+
+  for (let index = 0; index < png.data.length; index += 4) {
+    const r = png.data[index];
+    const g = png.data[index + 1];
+    const b = png.data[index + 2];
+    const a = png.data[index + 3];
+    if (a < 180) continue;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const brightness = (r + g + b) / 3;
+    const saturation = max - min;
+
+    opaquePixels += 1;
+    brightnessSum += brightness;
+    saturationSum += saturation;
+
+    if (saturation <= 10 && brightness >= 210 && brightness <= 240) loadingGrayPixels += 1;
+    if (saturation >= 24) coloredPixels += 1;
+    if (brightness < 120) darkPixels += 1;
+  }
+
+  if (!opaquePixels) return false;
+
+  const loadingGrayRatio = loadingGrayPixels / opaquePixels;
+  const coloredRatio = coloredPixels / opaquePixels;
+  const darkRatio = darkPixels / opaquePixels;
+  const averageBrightness = brightnessSum / opaquePixels;
+  const averageSaturation = saturationSum / opaquePixels;
+
+  return (
+    loadingGrayRatio >= 0.96 &&
+    coloredRatio <= 0.01 &&
+    darkRatio <= 0.01 &&
+    averageBrightness >= 210 &&
+    averageBrightness <= 240 &&
+    averageSaturation <= 6
+  );
+}
+
 export function findIllustrationAssetCrops(buffer: Buffer, maxAssets = 5): DetectedAssetCrop[] {
   const png = PNG.sync.read(buffer);
   const mask = new Uint8Array(png.width * png.height);

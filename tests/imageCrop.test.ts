@@ -5,6 +5,7 @@ import {
   findFigmaSelectionCrop,
   findIllustrationAssetCrops,
   findLargestForegroundCrop,
+  isLikelyFigmaLoadingScreenshot,
 } from "../src/imageCrop";
 
 describe("image crop helpers", () => {
@@ -54,6 +55,26 @@ describe("image crop helpers", () => {
     const assets = findIllustrationAssetCrops(PNG.sync.write(png));
     expect(assets).toHaveLength(1);
     expect(assets[0].box).toEqual({ x: 140, y: 221, width: 157, height: 130 });
+  });
+
+  it("detects Figma loading interstitial screenshots", () => {
+    const png = new PNG({ width: 1000, height: 800 });
+    fill(png, 230, 230, 230);
+    drawRect(png, 480, 368, 40, 40, 72, 72, 72);
+    drawRect(png, 430, 430, 140, 8, 252, 252, 252);
+
+    expect(isLikelyFigmaLoadingScreenshot(PNG.sync.write(png))).toBe(true);
+  });
+
+  it("does not treat a mostly white mobile screen as Figma loading UI", () => {
+    const png = new PNG({ width: 390, height: 844 });
+    fill(png, 252, 252, 252);
+    drawRect(png, 0, 0, 390, 140, 0, 92, 175);
+    drawRect(png, 32, 190, 240, 24, 34, 34, 34);
+    drawRect(png, 32, 260, 326, 52, 235, 241, 247);
+    drawRect(png, 32, 330, 326, 52, 235, 241, 247);
+
+    expect(isLikelyFigmaLoadingScreenshot(PNG.sync.write(png))).toBe(false);
   });
 });
 

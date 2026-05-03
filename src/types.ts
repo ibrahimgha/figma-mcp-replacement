@@ -55,6 +55,8 @@ export interface ExporterOptions {
   useUrlNode: boolean;
   allLeftSections: boolean;
   maxLeftSections: number;
+  leftSection?: string;
+  frameNameMatch?: string;
   skipFrameReview: boolean;
   frameName?: string;
 }

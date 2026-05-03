@@ -56,11 +56,11 @@ export class FigmaBrowserExporter {
         await this.pauseForUserReady();
       }
 
-      const initialFrames = this.options.useUrlNode
+      const initialFrames = this.filterFramesByName(this.options.useUrlNode
         ? await this.frameFromInputUrl(ui)
         : this.options.allLeftSections
           ? await this.discoverFramesAcrossLeftSections(ui)
-          : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
+          : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames)));
       const frames = this.options.skipFrameReview
         ? dedupeFrames(initialFrames)
         : await this.reviewFrames(initialFrames, ui);
@@ -138,7 +138,12 @@ export class FigmaBrowserExporter {
   }
 
   private async discoverFramesAcrossLeftSections(ui: FigmaUi): Promise<FrameRecord[]> {
-    const sections = await ui.discoverLeftSidebarSections(this.options.maxLeftSections);
+    let sections = await ui.discoverLeftSidebarSections(this.options.maxLeftSections);
+    if (this.options.leftSection) {
+      const sectionNeedle = normalizeForMatch(this.options.leftSection);
+      sections = sections.filter((section) => normalizeForMatch(section.name).includes(sectionNeedle));
+      this.log(`Filtered left sidebar sections to ${sections.length} match(es) for "${this.options.leftSection}".`);
+    }
     if (sections.length === 0) {
       this.log("No left sidebar sections were found. Falling back to the current page.");
       return dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
@@ -455,6 +460,21 @@ export class FigmaBrowserExporter {
     console.log(message);
   }
 
+  private filterFramesByName(frames: FrameRecord[]): FrameRecord[] {
+    if (!this.options.frameNameMatch) return frames;
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(this.options.frameNameMatch, "i");
+    } catch (error) {
+      throw new Error(`Invalid --frame-name-match regex: ${formatError(error)}`);
+    }
+    const filtered = frames.filter((frame) => pattern.test(frame.name));
+    this.log(
+      `Filtered frames to ${filtered.length}/${frames.length} match(es) for /${this.options.frameNameMatch}/i.`,
+    );
+    return filtered;
+  }
+
   private effectiveScreenshotMode(): "canvas" | "native" {
     if (!this.options.allowFigmaWrites) return "canvas";
     return this.options.screenshotMode === "native" ? "native" : "canvas";
@@ -463,4 +483,12 @@ export class FigmaBrowserExporter {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeForMatch(value: string): string {
+  return value
+    .replace(/^[^\p{L}\p{N}]+/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }

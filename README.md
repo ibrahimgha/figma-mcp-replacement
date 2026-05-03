@@ -79,6 +79,7 @@ node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
 node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --screenshot-mode canvas --asset-mode auto
 node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --screenshot-mode canvas --asset-mode auto
+node --import tsx .\src\cli.ts "<figma-url>" --all-left-sections --left-section "Registration" --frame-name-match "Registration - light mode|OTP Error|failed"
 node --import tsx .\src\cli.ts "<figma-url>" --allow-figma-writes --screenshot-mode native
 ```
 

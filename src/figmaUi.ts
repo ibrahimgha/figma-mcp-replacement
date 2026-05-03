@@ -4,7 +4,13 @@ import type { ExporterConfig } from "./config";
 import { readNodeIdFromUrl, withNodeId } from "./utils/url";
 import { extensionForFormat, saveDownloadAs, type ExportFormat } from "./downloads";
 import { writeFile } from "node:fs/promises";
-import { cropPng, findFigmaSelectionCrop, findLargestForegroundCrop, type CropBox } from "./imageCrop";
+import {
+  cropPng,
+  findFigmaSelectionCrop,
+  findLargestForegroundCrop,
+  isLikelyFigmaLoadingScreenshot,
+  type CropBox,
+} from "./imageCrop";
 import { skipReasonForFrameCandidate } from "./frameFilters";
 
 interface FigmaUiArgs {
@@ -347,7 +353,7 @@ export class FigmaUi {
 
   async selectNode(figmaUrl: string, nodeId: string): Promise<void> {
     await this.page.goto(withNodeId(figmaUrl, nodeId), { waitUntil: "domcontentloaded" });
-    await this.page.waitForTimeout(this.cooldownMs);
+    await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
   }
 
   async readSelectedLayerName(): Promise<string | undefined> {
@@ -400,17 +406,42 @@ export class FigmaUi {
   async captureSelectedFrameScreenshot(targetPath: string): Promise<string> {
     const didHideUi = await this.hideFigmaUiForCapture();
     try {
-      await this.zoomToSelection();
-      const canvasBox = await this.visibleCanvasSearchBox();
-      const screenshot = await this.page.screenshot({ fullPage: false });
-      const crop =
-        findLargestForegroundCrop(screenshot, canvasBox) ??
-        findFigmaSelectionCrop(screenshot, canvasBox);
-      if (!crop) {
-        throw new Error("Could not detect the selected frame outline in the Figma viewport.");
+      const maxAttempts = 8;
+      let lastError: Error | undefined;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        await this.zoomToSelection();
+        const canvasBox = await this.visibleCanvasSearchBox();
+        const screenshot = await this.page.screenshot({ fullPage: false });
+
+        if (isLikelyFigmaLoadingScreenshot(screenshot)) {
+          this.logger(`Figma is still rendering the selected frame; waiting before screenshot retry ${attempt}/${maxAttempts}.`);
+          await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+          continue;
+        }
+
+        const crop =
+          findLargestForegroundCrop(screenshot, canvasBox) ??
+          findFigmaSelectionCrop(screenshot, canvasBox);
+        if (!crop) {
+          lastError = new Error("Could not detect the selected frame in the Figma viewport.");
+          this.logger(`Could not detect the selected frame crop; waiting before screenshot retry ${attempt}/${maxAttempts}.`);
+          await this.page.waitForTimeout(Math.max(this.cooldownMs, 1800));
+          continue;
+        }
+
+        const cropped = cropPng(screenshot, crop);
+        if (isLikelyFigmaLoadingScreenshot(cropped)) {
+          this.logger(`Cropped screenshot still looks like Figma loading UI; waiting before retry ${attempt}/${maxAttempts}.`);
+          await this.page.waitForTimeout(Math.max(this.cooldownMs, 2500));
+          continue;
+        }
+
+        await writeFile(targetPath, cropped);
+        return targetPath;
       }
-      await writeFile(targetPath, cropPng(screenshot, crop));
-      return targetPath;
+
+      throw lastError ?? new Error("Figma canvas did not finish rendering the selected frame before screenshot retries expired.");
     } finally {
       if (didHideUi) await this.showFigmaUiAfterCapture();
     }

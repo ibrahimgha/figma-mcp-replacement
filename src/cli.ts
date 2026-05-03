@@ -63,6 +63,8 @@ program
   .option("--use-url-node", "Use the node-id from the input URL as the frame to export", false)
   .option("--all-left-sections", "Scroll the left Pages panel and export frames from every visible/discovered page", false)
   .option("--max-left-sections <count>", "Maximum left Pages panel sections to inspect", parsePositiveInt, 100)
+  .option("--left-section <text>", "Only scan left Pages panel sections whose name contains this text")
+  .option("--frame-name-match <regex>", "Only export discovered frames whose name matches this JavaScript regex")
   .option("--skip-frame-review", "Export discovered/provided frames without terminal review", false)
   .option("--frame-name <name>", "Name to use when --use-url-node cannot read a selected layer name")
   .action(async (figmaUrl: string, rawOptions) => {
@@ -84,6 +86,8 @@ program
       useUrlNode: rawOptions.useUrlNode,
       allLeftSections: rawOptions.allLeftSections,
       maxLeftSections: rawOptions.maxLeftSections,
+      leftSection: rawOptions.leftSection,
+      frameNameMatch: rawOptions.frameNameMatch,
       skipFrameReview: rawOptions.skipFrameReview,
       frameName: rawOptions.frameName,
     };
