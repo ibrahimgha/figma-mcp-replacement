@@ -13,6 +13,7 @@ import { parseFigmaUrl, readNodeIdFromUrl, withNodeId } from "./utils/url";
 import type { ExportFormat } from "./downloads";
 import { openFileInBrowser, writePromptReport, type PromptReportEntry } from "./promptReport";
 import { cropPng, findIllustrationAssetCrops } from "./imageCrop";
+import { skipReasonForLeftSection } from "./frameFilters";
 
 export class FigmaBrowserExporter {
   private readonly options: ExporterOptions;
@@ -145,6 +146,11 @@ export class FigmaBrowserExporter {
 
     const allFrames: FrameRecord[] = [];
     for (const [index, section] of sections.entries()) {
+      const sectionSkipReason = skipReasonForLeftSection(section.name);
+      if (sectionSkipReason) {
+        this.log(`Skipping left section ${index + 1}/${sections.length}: ${section.name} (${sectionSkipReason})`);
+        continue;
+      }
       this.log(`Scanning left section ${index + 1}/${sections.length}: ${section.name}`);
       const selected = await ui.selectLeftSidebarSection(section);
       if (!selected) {

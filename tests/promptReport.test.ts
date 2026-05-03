@@ -128,4 +128,31 @@ describe("prompt report", () => {
     expect(html.match(/<img[^>]+data-screenshot/g)).toHaveLength(2);
     expect(html).toContain("C:\\two\\screenshot.png");
   });
+
+  it("renders feedback voting controls with exact screen identifiers", () => {
+    const html = renderPromptHtml([
+      { frameDir: "C:\\one\\Checkout__1-2", manifest: manifest() },
+      {
+        frameDir: "C:\\two\\Settings__5-6",
+        manifest: manifest({
+          frame: {
+            nodeId: "5:6",
+            name: "Settings",
+            pageName: "Account",
+            source: "auto",
+            url: "https://www.figma.com/design/file/name?node-id=5-6",
+          },
+        }),
+      },
+    ]);
+
+    expect(html.match(/<button[^>]+data-vote="approved"/g)).toHaveLength(2);
+    expect(html.match(/<button[^>]+data-vote="rejected"/g)).toHaveLength(2);
+    expect(html).toContain("feedbackSchema: 'figma-browser-export-feedback/v1'");
+    expect(html).toContain("feedbackScreens =");
+    expect(html).toContain('"figmaNodeId":"5:6"');
+    expect(html).toContain('"localScreenDirectory":"C:\\\\two\\\\Settings__5-6"');
+    expect(html).toContain('id="feedback-message"');
+    expect(html).toContain("data-copy-feedback");
+  });
 });

@@ -5,6 +5,7 @@ import { readNodeIdFromUrl, withNodeId } from "./utils/url";
 import { extensionForFormat, saveDownloadAs, type ExportFormat } from "./downloads";
 import { writeFile } from "node:fs/promises";
 import { cropPng, findFigmaSelectionCrop, findLargestForegroundCrop, type CropBox } from "./imageCrop";
+import { skipReasonForFrameCandidate } from "./frameFilters";
 
 interface FigmaUiArgs {
   page: Page;
@@ -734,8 +735,11 @@ export class FigmaUi {
       }));
     }, maxFrames);
 
-    this.logger(`Discovered ${candidates.length} frame candidate(s) from the Figma Layers UI.`);
-    return candidates;
+    const filtered = candidates.filter((candidate) => !skipReasonForFrameCandidate(candidate));
+    const skipped = candidates.length - filtered.length;
+    const skippedSuffix = skipped > 0 ? ` (${skipped} feedback-learned noise candidate(s) skipped)` : "";
+    this.logger(`Discovered ${filtered.length} frame candidate(s) from the Figma Layers UI${skippedSuffix}.`);
+    return filtered;
   }
 
   private async extractCandidates(kind: "frame" | "asset"): Promise<CandidateRecord[]> {

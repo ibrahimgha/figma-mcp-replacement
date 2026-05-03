@@ -23,6 +23,7 @@ The tool is built for human-assisted runs on one machine. If Figma asks for sign
 - Pauses while you sign in and load the file.
 - Can scroll the left Pages panel and scan every discovered page/section with `--all-left-sections`.
 - Detects frame-like screens from Figma's visible Layers UI and Dev Mode "Ready for development" cards.
+- Uses feedback-learned filters to skip obvious non-screen rows such as cover/overview pages, labels, raw image frames, device mock frames, and generic numbered frames.
 - Lets you review, add, or remove frames before exporting.
 - Exports every selected frame into its own folder.
 - For Dev Mode/view-only files, can hide the Figma UI, zoom to each selected frame, and crop the selected frame outline with `--screenshot-mode canvas`.
