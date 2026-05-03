@@ -145,6 +145,14 @@ export class FigmaUi {
     return finalPath;
   }
 
+  async captureViewportScreenshot(targetPath: string): Promise<string> {
+    await this.page.screenshot({
+      path: targetPath,
+      fullPage: false,
+    });
+    return targetPath;
+  }
+
   private async prepareExportSetting(format: ExportFormat): Promise<void> {
     await this.page.keyboard.press(process.platform === "darwin" ? "Meta+Alt+I" : "Control+Alt+I").catch(() => undefined);
     await this.page.waitForTimeout(Math.min(this.cooldownMs, 1000));

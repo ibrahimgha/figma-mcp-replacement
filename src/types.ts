@@ -42,6 +42,10 @@ export interface ExporterOptions {
   maxAutoFrames: number;
   maxAssetsPerFrame: number;
   keepBrowserOpen: boolean;
+  skipReadyPrompt: boolean;
+  useUrlNode: boolean;
+  skipFrameReview: boolean;
+  frameName?: string;
 }
 
 export interface BrowserSessionInfo {

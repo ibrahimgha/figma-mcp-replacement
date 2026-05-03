@@ -44,10 +44,18 @@ export class FigmaBrowserExporter {
       this.log(`Opening ${this.options.figmaUrl}`);
       await page.goto(this.options.figmaUrl, { waitUntil: "domcontentloaded" });
       await ui.waitForEditor();
-      await this.pauseForUserReady();
+      if (this.options.skipReadyPrompt) {
+        this.log("Skipping ready prompt.");
+      } else {
+        await this.pauseForUserReady();
+      }
 
-      const autoFrames = dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
-      const frames = await this.reviewFrames(autoFrames, ui);
+      const initialFrames = this.options.useUrlNode
+        ? await this.frameFromInputUrl(ui)
+        : dedupeFrames(await ui.discoverFrames(this.options.maxAutoFrames));
+      const frames = this.options.skipFrameReview
+        ? dedupeFrames(initialFrames)
+        : await this.reviewFrames(initialFrames, ui);
       if (frames.length === 0) {
         this.log("No frames selected for export. Nothing to do.");
         return;
@@ -104,6 +112,23 @@ export class FigmaBrowserExporter {
     }
   }
 
+  private async frameFromInputUrl(ui: FigmaUi): Promise<FrameRecord[]> {
+    const nodeId = readNodeIdFromUrl(this.options.figmaUrl);
+    if (!nodeId) {
+      throw new Error("--use-url-node was set, but the Figma URL does not contain node-id.");
+    }
+    const selectedName = await ui.readSelectedLayerName().catch(() => undefined);
+    const name = selectedName ?? this.options.frameName ?? `Frame ${nodeId}`;
+    return [
+      {
+        nodeId,
+        name,
+        source: "manual",
+        url: withNodeId(this.options.figmaUrl, nodeId),
+      },
+    ];
+  }
+
   private async readCurrentSelectionAsFrame(ui: FigmaUi): Promise<FrameRecord | undefined> {
     await this.question("Select the frame in Figma, then press Enter here to record it: ");
     const nodeId = readNodeIdFromUrl(ui.currentUrl());
@@ -152,6 +177,15 @@ export class FigmaBrowserExporter {
         addScreenshot(manifest, frameDir, screenshot);
       } catch (error) {
         manifest.errors.push(`Frame screenshot export failed: ${formatError(error)}`);
+        try {
+          const fallbackScreenshot = await ui.captureViewportScreenshot(
+            path.join(frameDir, "screenshot.png"),
+          );
+          addScreenshot(manifest, frameDir, fallbackScreenshot);
+          manifest.errors.push("Saved browser viewport screenshot fallback.");
+        } catch (fallbackError) {
+          manifest.errors.push(`Browser viewport screenshot fallback failed: ${formatError(fallbackError)}`);
+        }
       }
 
       if (this.options.assetMode !== "none") {

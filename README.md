@@ -69,6 +69,7 @@ Useful options:
 node --import tsx .\src\cli.ts "<figma-url>" --asset-mode manual
 node --import tsx .\src\cli.ts "<figma-url>" --asset-mode none
 node --import tsx .\src\cli.ts "<figma-url>" --browser edge --keep-browser-open
+node --import tsx .\src\cli.ts "<figma-url>" --use-url-node --skip-ready-prompt --skip-frame-review --asset-mode none
 ```
 
 ## Workflow

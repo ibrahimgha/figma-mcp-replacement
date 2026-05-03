@@ -43,6 +43,10 @@ program
   .option("--max-auto-frames <count>", "Maximum auto-detected frame candidates to inspect", parsePositiveInt, 250)
   .option("--max-assets-per-frame <count>", "Maximum auto-detected asset candidates per frame", parsePositiveInt, 75)
   .option("--keep-browser-open", "Leave the browser open after the run", false)
+  .option("--skip-ready-prompt", "Do not wait for terminal confirmation after opening Figma", false)
+  .option("--use-url-node", "Use the node-id from the input URL as the frame to export", false)
+  .option("--skip-frame-review", "Export discovered/provided frames without terminal review", false)
+  .option("--frame-name <name>", "Name to use when --use-url-node cannot read a selected layer name")
   .action(async (figmaUrl: string, rawOptions) => {
     const options: ExporterOptions = {
       figmaUrl,
@@ -56,6 +60,10 @@ program
       maxAutoFrames: rawOptions.maxAutoFrames,
       maxAssetsPerFrame: rawOptions.maxAssetsPerFrame,
       keepBrowserOpen: rawOptions.keepBrowserOpen,
+      skipReadyPrompt: rawOptions.skipReadyPrompt,
+      useUrlNode: rawOptions.useUrlNode,
+      skipFrameReview: rawOptions.skipFrameReview,
+      frameName: rawOptions.frameName,
     };
 
     const exporter = new FigmaBrowserExporter(options);
